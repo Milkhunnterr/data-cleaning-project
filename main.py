@@ -2,20 +2,39 @@ import json
 from pathlib import Path
 
 #import library
+import unicodedata
 
 
 # DETECT
 
 def detect_duplicate(review, previous_reviews):
-    return None
+    current_text = review.get("text", "").strip()
+    for prev in previous_reviews:
+        if prev.get("text", "").strip() == current_text:
+            return True
+    return False
 
 
 def detect_all_foreign(text):
-    return None
+    has_thai = any("\u0e00" <= ch <= "\u0e7f" for ch in text)
+    if has_thai:
+        return False
+    return any(unicodedata.category(ch).startswith("L") for ch in text)
 
 
 def detect_empty_or_emoji_only(text):
-    return None
+    if not text.strip():
+        return True
+    has_letters = any(unicodedata.category(ch).startswith("L") for ch in text)
+    has_numbers = any(unicodedata.category(ch).startswith("N") for ch in text)
+    has_punctuation = any(unicodedata.category(ch).startswith("P") for ch in text)
+    if has_letters or has_numbers or has_punctuation:
+        return False
+    non_ws = [ch for ch in text if not ch.isspace()]
+    return bool(non_ws) and all(
+        unicodedata.category(ch).startswith("S") or unicodedata.category(ch) in ("Mn", "Cf")
+        for ch in non_ws
+    )
 
 
 def detect_html(text):
