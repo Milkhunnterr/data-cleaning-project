@@ -1,7 +1,11 @@
 import json
+import html
+import re
 from pathlib import Path
 
 #import library
+HTML_ENTITY_PATTERN = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});")
+HTML_TAG_PATTERN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
 
 
 # DETECT
@@ -19,7 +23,10 @@ def detect_empty_or_emoji_only(text):
 
 
 def detect_html(text):
-    return None
+    for match in HTML_ENTITY_PATTERN.findall(text):
+        if html.unescape(match) != match:
+            return True
+    return bool(HTML_TAG_PATTERN.search(text))
 
 
 def detect_zero_width_space(text):
