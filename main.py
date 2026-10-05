@@ -30,7 +30,18 @@ def detect_html(text):
 
 
 def detect_zero_width_space(text):
-    return any(char in ZERO_WIDTH_CHARS for char in text)
+    for i, char in enumerate(text):
+        if char not in ZERO_WIDTH_CHARS:
+            continue
+        if char == "\u200d":
+            prev_char = text[i - 1] if i > 0 else ""
+            next_char = text[i + 1] if i + 1 < len(text) else ""
+            if (prev_char and ord(prev_char) >= 0x2190) or (
+                next_char and ord(next_char) >= 0x2190
+            ):
+                continue
+        return True
+    return False
 
 
 def detect_different_unicode(text):
