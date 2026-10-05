@@ -87,7 +87,9 @@ def clean_encoding_error(text):
 
 
 def clean_html(text):
-    return text
+    text = HTML_TAG_PATTERN.sub("", text)
+    text = html.unescape(text)
+    return text.replace("\u00a0", " ")
 
 
 def clean_zero_width_space(text):
