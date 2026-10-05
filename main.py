@@ -6,7 +6,7 @@ from pathlib import Path
 #import library
 HTML_ENTITY_PATTERN = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});")
 HTML_TAG_PATTERN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
-
+ZERO_WIDTH_CHARS = {"\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"}
 
 # DETECT
 
@@ -30,7 +30,7 @@ def detect_html(text):
 
 
 def detect_zero_width_space(text):
-    return None
+    return any(char in ZERO_WIDTH_CHARS for char in text)
 
 
 def detect_different_unicode(text):
