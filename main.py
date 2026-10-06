@@ -5,6 +5,50 @@ from pathlib import Path
 #import library
 
 
+# ══════════════════════════════════════════════════════════════════
+#  ส่วนของเรา (B3): platform text + encoding error
+# ══════════════════════════════════════════════════════════════════
+_ORIGINAL_MARK = re.compile(r"\(\s*Original\s*\)", re.I)
+_GOOGLE_TAG = re.compile(
+    r"\(?\s*(?:Translated by Google|แปลโดย\s*Google)\s*\)?", re.I
+)
+_READ_MORE_TH = re.compile(r"(?:\.{2,}|\u2026)\s*อ่านเพิ่มเติม\s*,?|อ่านเพิ่มเติม\s*[,.]?\s*$")
+_READ_MORE_EN = re.compile(r"(?:\.{2,}|\u2026)\s*(?:Read more|More)\s*$", re.I)
+
+_MOJI_HINT = re.compile(r"[\u00e0\u00e2\u00c3\u00c2][\u0080-\u00ff\u0152-\u2122]|\u00ef\u00bf\u00bd")
+_MOJI_RUN = re.compile(
+    r"[\u0080-\u00ff\u0152\u0153\u0160\u0161\u0178\u017d\u017e"
+    r"\u0192\u02c6\u02dc\u2013-\u203a\u20ac\u2122]{3,}"
+)
+
+
+def _remove_platform_text(text):
+    parts = _ORIGINAL_MARK.split(text)
+    if len(parts) > 1:
+        text = parts[-1]
+    for pattern in (_GOOGLE_TAG, _READ_MORE_TH, _READ_MORE_EN):
+        text = pattern.sub(" ", text)
+    return text.strip(" ,;")
+
+
+def _to_bytes(run):
+    out = bytearray()
+    for ch in run:
+        try:
+            out += ch.encode("cp1252")
+        except UnicodeEncodeError:
+            out += ch.encode("latin-1")
+    return bytes(out)
+
+
+def _fix_mojibake(text):
+    def _fix(match):
+        try:
+            return _to_bytes(match.group()).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return match.group()
+
+    return _MOJI_RUN.sub(_fix, text)
 # PATTERNS: กฎที่ใช้ร่วมกันระหว่าง DETECT และ CLEAN
 
 # URL ที่ขึ้นต้นด้วย http://, https:// หรือ www.
@@ -66,11 +110,20 @@ def detect_stacked_tone_mark(text):
 
 
 def detect_platform_text(text):
-    return None
+    if not isinstance(text, str):
+        return None
+    return bool(
+        _ORIGINAL_MARK.search(text)
+        or _GOOGLE_TAG.search(text)
+        or _READ_MORE_TH.search(text)
+        or _READ_MORE_EN.search(text)
+    )
 
 
 def detect_encoding_error(text):
-    return None
+    if not isinstance(text, str):
+        return None
+    return "\ufffd" in text or _MOJI_HINT.search(text) is not None
 
 
 def detect_url(text):
@@ -122,7 +175,12 @@ def detect_newline(text):
 # CLEAN
 
 def clean_encoding_error(text):
-    return text
+    if not detect_encoding_error(text):
+        return text
+    fixed = _fix_mojibake(text)
+    if detect_encoding_error(fixed):
+        return text
+    return fixed
 
 
 def clean_html(text):
@@ -142,7 +200,9 @@ def clean_stacked_tone_mark(text):
 
 
 def clean_platform_text(text):
-    return text
+    if not detect_platform_text(text):
+        return text
+    return _remove_platform_text(text)
 
 
 def clean_url(text):
@@ -294,3 +354,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
