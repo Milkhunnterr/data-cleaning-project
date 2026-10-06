@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import re
 
 #import library
 
@@ -51,16 +52,103 @@ def detect_personal_info(text):
 
 
 def detect_number(text):
-    return None
+    # ตรวจเลขทั่วไป แต่ไม่นับเลขใน URL, Email และเบอร์โทร
 
+    if not isinstance(text, str) or not text:
+        return False
+
+    temp_text = text
+
+    email_pattern = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+
+    url_pattern = (
+        r"https?://\S+|"
+        r"www\.\S+|"
+        r"(?<!@)\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}(?::\d+)?(?:/\S*)?"
+    )
+
+    mobile_pattern = (
+        r"(?<!\d)"
+        r"(?:(?:\+?66)(?:[\s./-]*\(0\))?[\s./-]*[689]\d|0[689]\d)"
+        r"[\s./-]*\d{3}[\s./-]*\d{4}"
+        r"(?!\d)"
+    )
+
+    landline_pattern = (
+        r"(?<!\d)"
+        r"(?:(?:0[2-7]\d?|(?:\+?66)(?:[\s./-]*\(0\))?[\s./-]*[2-7]\d?))"
+        r"[\s./-]*\d{3}[\s./-]*\d{3,4}"
+        r"(?!\d)"
+    )
+
+    contextual_phone_pattern = (
+        r"(?:โทร(?:ศัพท์)?\.?|เบอร์(?:โทร(?:ศัพท์)?)?|"
+        r"tel(?:ephone)?\.?|phone|hotline)"
+        r"\s*[:：]?\s*"
+        r"(?:\+?\d[\d()./-]*(?:\s+\d[\d()./-]*){0,3})"
+        r"(?:\s*(?:ต่อ|ext\.?|extension)\s*\d+)?"
+    )
+
+    temp_text = re.sub(email_pattern, " ", temp_text, flags=re.IGNORECASE)
+    temp_text = re.sub(url_pattern, " ", temp_text, flags=re.IGNORECASE)
+    temp_text = re.sub(contextual_phone_pattern, " ", temp_text, flags=re.IGNORECASE)
+    temp_text = re.sub(mobile_pattern, " ", temp_text)
+    temp_text = re.sub(landline_pattern, " ", temp_text)
+
+    return any(char.isdigit() for char in temp_text)
 
 def detect_emoji(text):
-    return None
+    #ตรวจ Emoji รวมทั้ง emoji ทั่วไป, ธง, symbol, skin tone, keycap และ emoji แบบประกอบ
+
+    if not isinstance(text, str) or not text:
+        return False
+
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F1E6-\U0001F1FF"  # Flags
+        "\U0001F170-\U0001F1FF"  # 🅰 🆘 🆗 ฯลฯ
+        "\U0001F200-\U0001F2FF"  # Enclosed ideographic emoji
+        "\U0001F300-\U0001F5FF"  # Nature / Objects / Symbols
+        "\U0001F600-\U0001F64F"  # Faces
+        "\U0001F680-\U0001F6FF"  # Transport / Map
+        "\U0001F900-\U0001F9FF"  # Supplemental emoji
+        "\U0001FA00-\U0001FAFF"  # Newer emoji
+        "\U00002600-\U000026FF"  # Misc symbols
+        "\U00002700-\U000027BF"  # Dingbats
+        "\U00002B00-\U00002BFF"  # Supplemental symbols
+        "]"
+    )
+
+    if emoji_pattern.search(text):
+        return True
+
+    # Keycap เช่น 1️⃣ 2️⃣ #️⃣
+    if "\u20e3" in text:
+        return True
+
+    # Emoji presentation เช่น ❤️ ☀️ ✈️
+    if "\ufe0f" in text:
+        return True
+
+    # Skin tone เช่น 👍🏻 👍🏽
+    if re.search(r"[\U0001F3FB-\U0001F3FF]", text):
+        return True
+
+    return False
 
 
 def detect_newline(text):
-    return None
+    #ตรวจ line break / line separator
 
+    if not isinstance(text, str) or not text:
+        return False
+
+    return bool(
+        re.search(
+            r"[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]",
+            text
+        )
+    )
 
 # CLEAN
 
