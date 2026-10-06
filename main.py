@@ -1,7 +1,6 @@
 import json
 import re
 from pathlib import Path
-import re
 
 #import library
 
@@ -109,49 +108,50 @@ def detect_staff_name(text):
 
 
 def detect_number(text):
-    # ตรวจเลขทั่วไป แต่ไม่นับเลขใน URL, Email และเบอร์โทร
+    # ตรวจเลขทั่วไป แต่ไม่นับเลขใน URL, Email และเบอร์โทรศัพท์
 
     if not isinstance(text, str) or not text:
         return False
 
     temp_text = text
 
-    email_pattern = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
-
-    url_pattern = (
-        r"https?://\S+|"
-        r"www\.\S+|"
-        r"(?<!@)\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}(?::\d+)?(?:/\S*)?"
+    # Email
+    email_pattern = re.compile(
+        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+        re.IGNORECASE
     )
 
-    mobile_pattern = (
-        r"(?<!\d)"
-        r"(?:(?:\+?66)(?:[\s./-]*\(0\))?[\s./-]*[689]\d|0[689]\d)"
-        r"[\s./-]*\d{3}[\s./-]*\d{4}"
-        r"(?!\d)"
-    )
+    # ลบ Email
+    temp_text = email_pattern.sub(" ", temp_text)
 
-    landline_pattern = (
-        r"(?<!\d)"
-        r"(?:(?:0[2-7]\d?|(?:\+?66)(?:[\s./-]*\(0\))?[\s./-]*[2-7]\d?))"
-        r"[\s./-]*\d{3}[\s./-]*\d{3,4}"
-        r"(?!\d)"
-    )
+    # ลบ URL โดยใช้ pattern กลาง
+    temp_text = _URL_PATTERN.sub(" ", temp_text)
 
-    contextual_phone_pattern = (
-        r"(?:โทร(?:ศัพท์)?\.?|เบอร์(?:โทร(?:ศัพท์)?)?|"
-        r"tel(?:ephone)?\.?|phone|hotline)"
-        r"\s*[:：]?\s*"
-        r"(?:\+?\d[\d()./-]*(?:\s+\d[\d()./-]*){0,3})"
-        r"(?:\s*(?:ต่อ|ext\.?|extension)\s*\d+)?"
-    )
+    # ลบเฉพาะเลขที่เป็นเบอร์โทรจริง
+    def remove_phone(match):
+        before = match.string[:match.start()]
+        after = match.string[match.end():]
 
-    temp_text = re.sub(email_pattern, " ", temp_text, flags=re.IGNORECASE)
-    temp_text = re.sub(url_pattern, " ", temp_text, flags=re.IGNORECASE)
-    temp_text = re.sub(contextual_phone_pattern, " ", temp_text, flags=re.IGNORECASE)
-    temp_text = re.sub(mobile_pattern, " ", temp_text)
-    temp_text = re.sub(landline_pattern, " ", temp_text)
+        # ถ้าเลขอยู่ในบริบทราคา ให้เก็บไว้เป็น Number
+        price_before = re.search(
+            r"(?:฿|ราคา|ราคา[:：]|ราคาเท่ากับ)[ \t]*$",
+            before
+        )
 
+        price_after = re.match(
+            r"[ \t]*(?:บาท|฿|THB\b)",
+            after,
+            re.IGNORECASE
+        )
+
+        if price_before or price_after:
+            return match.group()
+
+        return " "
+
+    temp_text = _PHONE_PATTERN.sub(remove_phone, temp_text)
+
+    # ถ้ายังมี digit เหลืออยู่ = พบ Number/Price
     return any(char.isdigit() for char in temp_text)
 
 def detect_emoji(text):
