@@ -5,6 +5,50 @@ from pathlib import Path
 #import library
 
 
+# ══════════════════════════════════════════════════════════════════
+#  ส่วนของเรา (B3): platform text + encoding error
+# ══════════════════════════════════════════════════════════════════
+_ORIGINAL_MARK = re.compile(r"\(\s*Original\s*\)", re.I)
+_GOOGLE_TAG = re.compile(
+    r"\(?\s*(?:Translated by Google|แปลโดย\s*Google)\s*\)?", re.I
+)
+_READ_MORE_TH = re.compile(r"(?:\.{2,}|\u2026)\s*อ่านเพิ่มเติม\s*,?|อ่านเพิ่มเติม\s*[,.]?\s*$")
+_READ_MORE_EN = re.compile(r"(?:\.{2,}|\u2026)\s*(?:Read more|More)\s*$", re.I)
+
+_MOJI_HINT = re.compile(r"[\u00e0\u00e2\u00c3\u00c2][\u0080-\u00ff\u0152-\u2122]|\u00ef\u00bf\u00bd")
+_MOJI_RUN = re.compile(
+    r"[\u0080-\u00ff\u0152\u0153\u0160\u0161\u0178\u017d\u017e"
+    r"\u0192\u02c6\u02dc\u2013-\u203a\u20ac\u2122]{3,}"
+)
+
+
+def _remove_platform_text(text):
+    parts = _ORIGINAL_MARK.split(text)
+    if len(parts) > 1:
+        text = parts[-1]
+    for pattern in (_GOOGLE_TAG, _READ_MORE_TH, _READ_MORE_EN):
+        text = pattern.sub(" ", text)
+    return text.strip(" ,;")
+
+
+def _to_bytes(run):
+    out = bytearray()
+    for ch in run:
+        try:
+            out += ch.encode("cp1252")
+        except UnicodeEncodeError:
+            out += ch.encode("latin-1")
+    return bytes(out)
+
+
+def _fix_mojibake(text):
+    def _fix(match):
+        try:
+            return _to_bytes(match.group()).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return match.group()
+
+    return _MOJI_RUN.sub(_fix, text)
 # PATTERNS: กฎที่ใช้ร่วมกันระหว่าง DETECT และ CLEAN
 
 # URL ที่ขึ้นต้นด้วย http://, https:// หรือ www.
@@ -66,11 +110,20 @@ def detect_stacked_tone_mark(text):
 
 
 def detect_platform_text(text):
-    return None
+    if not isinstance(text, str):
+        return None
+    return bool(
+        _ORIGINAL_MARK.search(text)
+        or _GOOGLE_TAG.search(text)
+        or _READ_MORE_TH.search(text)
+        or _READ_MORE_EN.search(text)
+    )
 
 
 def detect_encoding_error(text):
-    return None
+    if not isinstance(text, str):
+        return None
+    return "\ufffd" in text or _MOJI_HINT.search(text) is not None
 
 
 def detect_url(text):
@@ -108,21 +161,114 @@ def detect_staff_name(text):
 
 
 def detect_number(text):
-    return None
+    # ตรวจเลขทั่วไป แต่ไม่นับเลขใน URL, Email และเบอร์โทรศัพท์
 
+    if not isinstance(text, str) or not text:
+        return False
+
+    temp_text = text
+
+    # Email
+    email_pattern = re.compile(
+        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+        re.IGNORECASE
+    )
+
+    # ลบ Email
+    temp_text = email_pattern.sub(" ", temp_text)
+
+    # ลบ URL โดยใช้ pattern กลาง
+    temp_text = _URL_PATTERN.sub(" ", temp_text)
+
+    # ลบเฉพาะเลขที่เป็นเบอร์โทรจริง
+    def remove_phone(match):
+        before = match.string[:match.start()]
+        after = match.string[match.end():]
+
+        # ถ้าเลขอยู่ในบริบทราคา ให้เก็บไว้เป็น Number
+        price_before = re.search(
+            r"(?:฿|ราคา|ราคา[:：]|ราคาเท่ากับ)[ \t]*$",
+            before
+        )
+
+        price_after = re.match(
+            r"[ \t]*(?:บาท|฿|THB\b)",
+            after,
+            re.IGNORECASE
+        )
+
+        if price_before or price_after:
+            return match.group()
+
+        return " "
+
+    temp_text = _PHONE_PATTERN.sub(remove_phone, temp_text)
+
+    # ถ้ายังมี digit เหลืออยู่ = พบ Number/Price
+    return any(char.isdigit() for char in temp_text)
 
 def detect_emoji(text):
-    return None
+    #ตรวจ Emoji รวมทั้ง emoji ทั่วไป, ธง, symbol, skin tone, keycap และ emoji แบบประกอบ
+
+    if not isinstance(text, str) or not text:
+        return False
+
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F1E6-\U0001F1FF"  # Flags
+        "\U0001F170-\U0001F1FF"  # 🅰 🆘 🆗 ฯลฯ
+        "\U0001F200-\U0001F2FF"  # Enclosed ideographic emoji
+        "\U0001F300-\U0001F5FF"  # Nature / Objects / Symbols
+        "\U0001F600-\U0001F64F"  # Faces
+        "\U0001F680-\U0001F6FF"  # Transport / Map
+        "\U0001F900-\U0001F9FF"  # Supplemental emoji
+        "\U0001FA00-\U0001FAFF"  # Newer emoji
+        "\U00002600-\U000026FF"  # Misc symbols
+        "\U00002700-\U000027BF"  # Dingbats
+        "\U00002B00-\U00002BFF"  # Supplemental symbols
+        "]"
+    )
+
+    if emoji_pattern.search(text):
+        return True
+
+    # Keycap เช่น 1️⃣ 2️⃣ #️⃣
+    if "\u20e3" in text:
+        return True
+
+    # Emoji presentation เช่น ❤️ ☀️ ✈️
+    if "\ufe0f" in text:
+        return True
+
+    # Skin tone เช่น 👍🏻 👍🏽
+    if re.search(r"[\U0001F3FB-\U0001F3FF]", text):
+        return True
+
+    return False
 
 
 def detect_newline(text):
-    return None
+    #ตรวจ line break / line separator
 
+    if not isinstance(text, str) or not text:
+        return False
+
+    return bool(
+        re.search(
+            r"[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]",
+            text
+        )
+    )
 
 # CLEAN
 
 def clean_encoding_error(text):
-    return text
+    if not detect_encoding_error(text):
+        return text
+    fixed = _fix_mojibake(text)
+    if detect_encoding_error(fixed):
+        return text
+    return fixed
 
 
 def clean_html(text):
@@ -142,7 +288,9 @@ def clean_stacked_tone_mark(text):
 
 
 def clean_platform_text(text):
-    return text
+    if not detect_platform_text(text):
+        return text
+    return _remove_platform_text(text)
 
 
 def clean_url(text):
@@ -294,3 +442,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
