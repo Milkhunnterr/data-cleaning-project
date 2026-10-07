@@ -1,8 +1,12 @@
 import json
+import html
 import re
 from pathlib import Path
 
 #import library
+HTML_ENTITY_PATTERN = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});")
+HTML_TAG_PATTERN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
+ZERO_WIDTH_CHARS = {"\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"}
 from pythainlp.util import reorder_vowels
 import unicodedata
 
@@ -114,11 +118,25 @@ def detect_empty_or_emoji_only(text):
 
 
 def detect_html(text):
-    return None
+    for match in HTML_ENTITY_PATTERN.findall(text):
+        if html.unescape(match) != match:
+            return True
+    return bool(HTML_TAG_PATTERN.search(text))
 
 
 def detect_zero_width_space(text):
-    return None
+    for i, char in enumerate(text):
+        if char not in ZERO_WIDTH_CHARS:
+            continue
+        if char == "\u200d":
+            prev_char = text[i - 1] if i > 0 else ""
+            next_char = text[i + 1] if i + 1 < len(text) else ""
+            if (prev_char and ord(prev_char) >= 0x2190) or (
+                next_char and ord(next_char) >= 0x2190
+            ):
+                continue
+        return True
+    return False
 
 
 # B2 Helper Constants & Functions
@@ -421,11 +439,26 @@ def clean_encoding_error(text):
 
 
 def clean_html(text):
-    return text
+    text = HTML_TAG_PATTERN.sub("", text)
+    text = html.unescape(text)
+    return text.replace("\u00a0", " ")
 
 
 def clean_zero_width_space(text):
-    return text
+    # ลบตัวอักษรล่องหน ยกเว้น ZWJ ที่เชื่อมอีโมจิ
+    cleaned = []
+    for i, char in enumerate(text):
+        if char not in ZERO_WIDTH_CHARS:
+            cleaned.append(char)
+            continue
+        if char == "\u200d":
+            prev_char = text[i - 1] if i > 0 else ""
+            next_char = text[i + 1] if i + 1 < len(text) else ""
+            if (prev_char and prev_char not in ZERO_WIDTH_CHARS and ord(prev_char) >= 0x2190) or (
+                next_char and next_char not in ZERO_WIDTH_CHARS and ord(next_char) >= 0x2190
+            ):
+                cleaned.append(char)
+    return "".join(cleaned)
 
 
 def clean_different_unicode(text):
