@@ -575,18 +575,6 @@ def clean_staff_name(text):
     return text
 
 
-def clean_number(text):
-    return text
-
-
-def clean_emoji(text):
-    return text
-
-
-def clean_newline(text):
-    return text
-
-
 def clean_review(text):
 
     clean_text = text
@@ -601,9 +589,6 @@ def clean_review(text):
         clean_url,
         clean_phone,
         clean_staff_name,
-        clean_number,
-        clean_emoji,
-        clean_newline,
     ]
 
     for clean_function in cleaning_steps:
@@ -624,7 +609,6 @@ def inspect_review(review, previous_reviews):
     result = {
         "id": review["id"],
         "text": text,
-        "cleanText": None,
         "isDuplicate": detect_duplicate(review, previous_reviews),
         "allForeign": detect_all_foreign(text),
         "emptyOrEmojiOnly": detect_empty_or_emoji_only(text),
@@ -642,33 +626,69 @@ def inspect_review(review, previous_reviews):
         "hasNewline": detect_newline(text),
     }
 
-    result["cleanText"] = clean_review(text)
     return result
 
 
 def main():
     base_dir = Path(__file__).resolve().parent
     input_path = base_dir / "mockdata.json"
-    output_path = base_dir / "checkoutput.json"
+    check_path = base_dir / "checkoutput.json"
+    final_path = base_dir / "finaloutput.json"
 
     with input_path.open("r", encoding="utf-8-sig") as file:
         reviews = json.load(file)
 
     results = []
+    final_results = []
     previous_reviews = []
+    discarded_count = 0
 
     for review in reviews:
+        # ตรวจข้อความต้นฉบับทุกฟังก์ชัน เพื่อเก็บ flags แม้รีวิวจะถูกทิ้ง
         result = inspect_review(review, previous_reviews)
         results.append(result)
+        # เก็บประวัติก่อน continue เพื่อให้ตรวจซ้ำตามลำดับข้อมูลต้นฉบับ
         previous_reviews.append(review)
-        print(f"เรียกฟังก์ชันตรวจและ Clean แล้ว: ID {review['id']}")
 
-    with output_path.open("w", encoding="utf-8") as file:
+        discard_reasons = []
+        if result["isDuplicate"] is True:
+            discard_reasons.append("รีวิวซ้ำ")
+        if result["allForeign"] is True:
+            discard_reasons.append("ภาษาต่างประเทศล้วน")
+        if result["emptyOrEmojiOnly"] is True:
+            discard_reasons.append("ข้อความว่างหรือมีแต่อีโมจิ/สัญลักษณ์ตามกฎ")
+
+        if discard_reasons:
+            discarded_count += 1
+            print(f"คัดทิ้ง ID {review['id']}: {', '.join(discard_reasons)}")
+            continue  # ไปรีวิวถัดไป ไม่เข้าลูป Clean
+
+        # เฉพาะรีวิวที่ผ่านจึงเข้า Clean ตามลำดับ โดยทุกขั้นคืน str
+        clean_text = clean_review(review["text"])
+
+        # เช่น มีแต่แท็ก HTML เมื่อลบแท็กแล้วอาจไม่เหลือข้อความ
+        # flags ใน checkoutput ยังคงเป็นผลตรวจข้อความต้นฉบับ
+        if not clean_text.strip():
+            discarded_count += 1
+            print(f"คัดทิ้ง ID {review['id']}: ข้อความว่างหลัง Clean")
+            continue
+
+        final_results.append({"id": review["id"], "text": clean_text})
+        print(f"Clean แล้วและเก็บไว้: ID {review['id']}")
+
+    # เก็บทุกรีวิว: id + ข้อความต้นฉบับ + flags ไม่มี cleanText
+    with check_path.open("w", encoding="utf-8") as file:
         json.dump(results, file, ensure_ascii=False, indent=2)
         file.write("\n")
 
-    print(f"บันทึกผล {len(results)} รายการ: {output_path}")
+    # เก็บเฉพาะรีวิวที่ผ่าน: id เดิม + ข้อความหลัง Clean
+    with final_path.open("w", encoding="utf-8") as file:
+        json.dump(final_results, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+
+    print(f"ผลตรวจ {len(results)} รายการ: {check_path}")
+    print(f"เก็บ {len(final_results)} รายการ / คัดทิ้ง {discarded_count} รายการ: {final_path}")
+
 
 if __name__ == "__main__":
     main()
-    
