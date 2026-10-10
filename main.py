@@ -624,6 +624,7 @@ def inspect_review(review, previous_reviews):
         "hasNumberOrPrice": detect_number(text),
         "hasEmoji": detect_emoji(text),
         "hasNewline": detect_newline(text),
+        "cleanText": None,
     }
 
     return result
@@ -633,13 +634,11 @@ def main():
     base_dir = Path(__file__).resolve().parent
     input_path = base_dir / "mockdata.json"
     check_path = base_dir / "checkoutput.json"
-    final_path = base_dir / "finaloutput.json"
 
     with input_path.open("r", encoding="utf-8-sig") as file:
         reviews = json.load(file)
 
     results = []
-    final_results = []
     previous_reviews = []
     discarded_count = 0
 
@@ -673,21 +672,16 @@ def main():
             print(f"คัดทิ้ง ID {review['id']}: ข้อความว่างหลัง Clean")
             continue
 
-        final_results.append({"id": review["id"], "text": clean_text})
+        result["cleanText"] = clean_text
         print(f"Clean แล้วและเก็บไว้: ID {review['id']}")
 
-    # เก็บทุกรีวิว: id + ข้อความต้นฉบับ + flags ไม่มี cleanText
+    # เก็บทุกรีวิว โดย cleanText อยู่ท้ายสุด; รายการที่คัดทิ้งเป็น null
     with check_path.open("w", encoding="utf-8") as file:
         json.dump(results, file, ensure_ascii=False, indent=2)
         file.write("\n")
 
-    # เก็บเฉพาะรีวิวที่ผ่าน: id เดิม + ข้อความหลัง Clean
-    with final_path.open("w", encoding="utf-8") as file:
-        json.dump(final_results, file, ensure_ascii=False, indent=2)
-        file.write("\n")
-
     print(f"ผลตรวจ {len(results)} รายการ: {check_path}")
-    print(f"เก็บ {len(final_results)} รายการ / คัดทิ้ง {discarded_count} รายการ: {final_path}")
+    print(f"เก็บ {len(results) - discarded_count} รายการ / คัดทิ้ง {discarded_count} รายการ")
 
 
 if __name__ == "__main__":
