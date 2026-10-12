@@ -537,7 +537,7 @@
     "hasNumberOrPrice": false,
     "hasEmoji": false,
     "hasNewline": false,
-    "cleanText": "สอบถามเพิ่มเติมโทร หรือดูที่ very good service"
+    "cleanText": "สอบถามเพิ่มเติมโทร [PHONE] หรือดูที่ [URL] very good service"
   },
   {
     "id": "B1_14",
@@ -547,8 +547,8 @@
     "emptyOrEmojiOnly": false,
     "hasHTML": false,
     "hasZeroWidthSpace": false,
-    "hasDifferentUnicode": false,
-    "hasStackedToneMark": true,
+    "hasDifferentUnicode": true,
+    "hasStackedToneMark": false,
     "hasPlatformText": true,
     "hasEncodingError": false,
     "hasURL": false,
@@ -557,6 +557,6 @@
     "hasNumberOrPrice": false,
     "hasEmoji": false,
     "hasNewline": false,
-    "cleanText": "น้ำใสไหลเย็นเห็นตัวปลา บรรยากาศยอดเยี่ยมมาก"
+    "cleanText": "น้ำใสไหลเย็นเห็นตัวปลา   บรรยากาศยอดเยี่ยมมาก"
   }
 ]
