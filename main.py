@@ -154,7 +154,7 @@ def detect_empty_or_emoji_only(text):
 
 
 def detect_html(text):
-   if not text or not isinstance(text, str):
+    if not text or not isinstance(text, str):
         return False
     for match in _HTML_ENTITY_PATTERN.findall(text):
         if html.unescape(match) != match:
@@ -163,7 +163,7 @@ def detect_html(text):
 
 
 def detect_zero_width_space(text):
-   if not text or not isinstance(text, str):
+    if not text or not isinstance(text, str):
         return False
     for i, char in enumerate(text):
         if char not in _ZERO_WIDTH_CHARS:
