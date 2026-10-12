@@ -4,9 +4,10 @@ import re
 from pathlib import Path
 
 #import library
-HTML_ENTITY_PATTERN = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});")
-HTML_TAG_PATTERN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
-ZERO_WIDTH_CHARS = {"\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"}
+_HTML_ENTITY_PATTERN = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});")
+_HTML_TAG_PATTERN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
+_HTML_BREAK_PATTERN = re.compile(r"<(?:br|/p|/div)[^>]*>", re.IGNORECASE)
+_ZERO_WIDTH_CHARS = {"\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"}
 from pythainlp.util import reorder_vowels
 import unicodedata
 
@@ -153,15 +154,19 @@ def detect_empty_or_emoji_only(text):
 
 
 def detect_html(text):
-    for match in HTML_ENTITY_PATTERN.findall(text):
+   if not text or not isinstance(text, str):
+        return False
+    for match in _HTML_ENTITY_PATTERN.findall(text):
         if html.unescape(match) != match:
             return True
-    return bool(HTML_TAG_PATTERN.search(text))
+    return bool(_HTML_TAG_PATTERN.search(text))
 
 
 def detect_zero_width_space(text):
+   if not text or not isinstance(text, str):
+        return False
     for i, char in enumerate(text):
-        if char not in ZERO_WIDTH_CHARS:
+        if char not in _ZERO_WIDTH_CHARS:
             continue
         if char == "\u200d":
             prev_char = text[i - 1] if i > 0 else ""
