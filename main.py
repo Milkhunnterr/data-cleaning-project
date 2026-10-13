@@ -149,8 +149,7 @@ def _fix_mojibake(text):
 
 # PATTERNS: กฎที่ใช้ร่วมกันระหว่าง DETECT และ CLEAN
 
-# URL ที่ขึ้นต้นด้วย http://, https:// หรือ www.
-# รองรับ URL ภาษาอังกฤษและ percent-encoding; ไม่กินข้อความไทย/อีโมจิที่ติดท้าย
+# กฎเดิมที่ detect_number ของเพื่อนใช้อยู่ คงไว้เพื่อไม่เปลี่ยนพฤติกรรมงานอื่น
 _URL_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_@])(?:https?://|www\.)"
     r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?"
@@ -158,8 +157,6 @@ _URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# เบอร์ไทย: มือถือ 10 หลัก / โทรศัพท์พื้นฐาน 9 หลัก และรูปแบบ +66
-# ช่องว่างหรือขีดคั่นได้ แต่ไม่ข้ามบรรทัด และไม่จับส่วนหนึ่งของเลขที่ยาวกว่า
 _PHONE_PATTERN = re.compile(
     r"(?<![0-9A-Za-z_+])(?:"
     r"(?:0|\+66[ \t-]?)[689](?:[ \t-]?[0-9]){8}"
@@ -167,13 +164,51 @@ _PHONE_PATTERN = re.compile(
     r")(?![0-9])"
 )
 
-# ตรวจชื่อเฉพาะเมื่อมีบริบทพนักงาน/เจ้าหน้าที่ พร้อมคำว่า ชื่อ หรือ คุณ
-# เป็นกฎเบื้องต้น ไม่ใช่ระบบรู้จำชื่อบุคคลทุกแบบ
+# URL แบบ ASCII / percent-encoding: ต้องมีชื่อโดเมนและส่วนท้าย
+# ไม่รองรับโดเมน/พาธภาษาไทยที่ยังไม่ได้ encode หรือโดเมนเปล่าที่ไม่มี www./scheme
+_CONTACT_URL_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_@])(?:https?://|www\.)"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"(?:[A-Za-z]{2,63}|xn--[A-Za-z0-9-]{2,59})"
+    r"(?![A-Za-z0-9_-])"
+    r"(?::[0-9]{1,5})?"
+    r"(?:[/?#][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%+-]*)?",
+    re.IGNORECASE,
+)
+
+# ตรวจรูปแบบเบอร์ ไม่ยืนยันว่าเบอร์มีอยู่จริง และไม่เดาตัวอักษรที่พิมพ์ผิดเป็นเลข
+_CONTACT_PHONE_PATTERN = re.compile(
+    r"(?<![0-9A-Za-z_+])(?:"
+    r"(?:0|\+66[ \t.-]*(?:\(0\)[ \t.-]*)?)[689](?:[ \t.-]?[0-9]){8}"
+    r"|(?:0|\+66[ \t.-]*(?:\(0\)[ \t.-]*)?)[2-57](?:[ \t.-]?[0-9]){7}"
+    r")(?![0-9A-Za-z_]|[.-][0-9])"
+)
+_CONTACT_EMAIL_PATTERN = re.compile(
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", re.IGNORECASE
+)
+_PHONE_PRICE_BEFORE = re.compile(
+    r"(?:ราคา(?:เท่ากับ)?|ยอด(?:เงิน|รวม)?|จำนวนเงิน|฿|THB)"
+    r"[ \t]*(?:[:：=][ \t]*)?(?:฿[ \t]*)?$", re.IGNORECASE
+)
+_PHONE_PRICE_AFTER = re.compile(
+    r"[ \t]*(?:\+\+[ \t]*)?(?:บาท|฿|THB\b)", re.IGNORECASE
+)
+
+# ต้องมีบริบทพนักงาน/เจ้าหน้าที่/สมาชิก ไม่เดาชื่อจากข้อความทั่วไป
+# ใช้ตัวอักษรไทยจริง ไม่ใช้ [ก-๙] ซึ่งรวมเลขไทยและเครื่องหมายบางตัว
+# stop phrases ช่วยแยกคำบรรยายที่ติดชื่อ แต่ยังไม่ใช่ระบบ NER
+_STAFF_STOP = (
+    r"แนะนำ|บริการ|ช่วย|ดูแล|ต้อนรับ|พูด|ยิ้ม|น่ารัก|สุภาพ|ใจดี|"
+    r"ดีมาก|ให้บริการ|ให้คำ|ทำงาน|ทำให้|บอกทาง|แถม|จำได้|"
+    r"ครับ|ค่ะ|คะ|นะคะ|มากๆ|เป็นพนักงาน|และ|\[NAME\]"
+)
+_STAFF_WORD = rf"(?:(?!(?:{_STAFF_STOP}))[ก-ฮะ-ฺเ-๎A-Za-z])+"
 _STAFF_NAME_PATTERN = re.compile(
-    r"(?P<prefix>(?:พนักงาน|เจ้าหน้าที่)[ \t]*(?:ชื่อ[ \t]*(?:คุณ[ \t]*)?|คุณ[ \t]*))"
-    r"(?!คุณ\[NAME\]|\[NAME\])(?P<name>[ก-๙A-Za-z]+"
-    r"(?:[ \t]+(?!(?:ให้|ช่วย|บริการ|แนะนำ|ดูแล|ต้อนรับ|พูด|ทำ|ยิ้ม|น่ารัก|สุภาพ|ดีมาก|มาก|ค่ะ|ครับ|คะ|นะ|เป็น|ที่|และ|ได้|ไม่|มา))"
-    r"[ก-๙A-Za-z]+)?)"
+    r"(?P<prefix>(?:พนักงาน|เจ้าหน้าที่|สมาชิก)[ \t]*"
+    r"(?:ชื่อ[ \t]*(?:[:：][ \t]*)?(?:(?:คุณ|นางสาว|นาย|นาง)[ \t]*)?"
+    r"|(?:คุณ|นางสาว|นาย|นาง)[ \t]*))"
+    r"(?!(?:(?:คุณ|นางสาว|นาย|นาง)[ \t]*)?\[NAME\])"
+    rf"(?P<name>{_STAFF_WORD}(?:[ \t]+{_STAFF_WORD})?)"
 )
 
 
@@ -388,34 +423,36 @@ def detect_encoding_error(text):
 
 def detect_url(text):
     """ตรวจ URL ในข้อความต้นฉบับ แล้วคืน True หรือ False"""
-    return _URL_PATTERN.search(text) is not None
+    return _CONTACT_URL_PATTERN.search(text) is not None
 
 
 def detect_phone(text):
     """ตรวจเบอร์โทร โดยข้ามตัวเลขใน URL และตัวเลขที่ระบุว่าเป็นราคา"""
     url_spans = []
-    for match in _URL_PATTERN.finditer(text):
+    for match in _CONTACT_URL_PATTERN.finditer(text):
         url = match.group().rstrip('.,!?;:')
         for left, right in [('(', ')'), ('[', ']')]:
             while url.endswith(right) and url.count(right) > url.count(left):
                 url = url[:-1]
         url_spans.append((match.start(), match.start() + len(url)))
 
-    for match in _PHONE_PATTERN.finditer(text):
-        if any(start <= match.start() < end for start, end in url_spans):
+    email_spans = [(m.start(), m.end()) for m in _CONTACT_EMAIL_PATTERN.finditer(text)]
+    for match in _CONTACT_PHONE_PATTERN.finditer(text):
+        if any(match.start() < end and match.end() > start
+               for start, end in url_spans + email_spans):
             continue
         before = text[:match.start()]
         after = text[match.end():]
-        if re.search(r"(?:฿|ราคา|ราคา[:：]|ราคาเท่ากับ)[ \t]*$", before):
+        if _PHONE_PRICE_BEFORE.search(before):
             continue
-        if re.match(r"[ \t]*(?:บาท|฿|THB\b)", after, re.IGNORECASE):
+        if _PHONE_PRICE_AFTER.match(after):
             continue
         return True
     return False
 
 
 def detect_staff_name(text):
-    """พบชื่อที่ตามหลังคำระบุพนักงาน/เจ้าหน้าที่หรือไม่"""
+    """ตรวจชื่อ/นามสกุลหลังบริบทพนักงาน เจ้าหน้าที่ หรือสมาชิกตามกฎ"""
     return _STAFF_NAME_PATTERN.search(text) is not None
 
 
@@ -620,7 +657,7 @@ def clean_platform_text(text):
 def clean_url(text):
     """ค้นหาและแทน URL เอง โดยไม่เรียก Detect; ไม่พบก็คืนข้อความเดิม"""
     spans = []
-    for match in _URL_PATTERN.finditer(text):
+    for match in _CONTACT_URL_PATTERN.finditer(text):
         url = match.group().rstrip('.,!?;:')
         for left, right in [('(', ')'), ('[', ']')]:
             while url.endswith(right) and url.count(right) > url.count(left):
@@ -636,7 +673,7 @@ def clean_url(text):
 def clean_phone(text):
     """ค้นหาและปิดบังเบอร์โทรเอง โดยไม่เรียก Detect"""
     url_spans = []
-    for match in _URL_PATTERN.finditer(text):
+    for match in _CONTACT_URL_PATTERN.finditer(text):
         url = match.group().rstrip('.,!?;:')
         for left, right in [('(', ')'), ('[', ']')]:
             while url.endswith(right) and url.count(right) > url.count(left):
@@ -644,14 +681,16 @@ def clean_phone(text):
         url_spans.append((match.start(), match.start() + len(url)))
 
     matches = []
-    for match in _PHONE_PATTERN.finditer(text):
-        if any(start <= match.start() < end for start, end in url_spans):
+    email_spans = [(m.start(), m.end()) for m in _CONTACT_EMAIL_PATTERN.finditer(text)]
+    for match in _CONTACT_PHONE_PATTERN.finditer(text):
+        if any(match.start() < end and match.end() > start
+               for start, end in url_spans + email_spans):
             continue
         before = text[:match.start()]
         after = text[match.end():]
-        if re.search(r"(?:฿|ราคา|ราคา[:：]|ราคาเท่ากับ)[ \t]*$", before):
+        if _PHONE_PRICE_BEFORE.search(before):
             continue
-        if re.match(r"[ \t]*(?:บาท|฿|THB\b)", after, re.IGNORECASE):
+        if _PHONE_PRICE_AFTER.match(after):
             continue
         matches.append(match)
 
