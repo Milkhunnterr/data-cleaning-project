@@ -14,27 +14,61 @@ import unicodedata
 # ══════════════════════════════════════════════════════════════════
 #  ส่วนของเรา (B3): platform text + encoding error
 # ══════════════════════════════════════════════════════════════════
+
+# ---------- platform text ----------
 _ORIGINAL_MARK = re.compile(r"\(\s*Original\s*\)", re.I)
 _GOOGLE_TAG = re.compile(
-    r"\(?\s*(?:Translated by Google|แปลโดย\s*Google)\s*\)?", re.I
+    r"[ \t]*\(?\s*(?:Translated by Google|แปลโดย\s*Google)\s*\)?[ \t]*", re.I
 )
-_READ_MORE_TH = re.compile(r"(?:\.{2,}|\u2026)\s*อ่านเพิ่มเติม\s*,?|อ่านเพิ่มเติม\s*[,.]?\s*$")
-_READ_MORE_EN = re.compile(r"(?:\.{2,}|\u2026)\s*(?:Read more|More)\s*$", re.I)
+# "...อ่านเพิ่มเติม" ที่ใดก็ได้ / "อ่านเพิ่มเติม" หรือ "แสดงเพิ่มเติม" ที่ท้ายข้อความ
+_READ_MORE_TH = re.compile(
+    r"[ \t]*(?:\.{2,}|\u2026)\s*(?:อ่าน|แสดง)เพิ่มเติม\s*,?[ \t]*"
+    r"|[ \t]*(?:อ่าน|แสดง)เพิ่มเติม\s*[,.]?\s*$"
+)
+_READ_MORE_EN = re.compile(
+    r"[ \t]*(?:\.{2,}|\u2026)\s*(?:Read more|See more|Show more|More)\s*$", re.I
+)
+# ป้ายของแพลตฟอร์มที่ยืนเป็นวลีเดี่ยว (ไม่ติดกับตัวอักษรไทย/อังกฤษ)
+_UI_LABEL = re.compile(
+    r"(?<![A-Za-z\u0e00-\u0e7f])[ \t]*"
+    r"(?:ดูคำแปล|See translation|Google Review)"
+    r"(?![A-Za-z\u0e00-\u0e7f])[ \t]*",
+    re.I,
+)
 
-_MOJI_HINT = re.compile(r"[\u00e0\u00e2\u00c3\u00c2][\u0080-\u00ff\u0152-\u2122]|\u00ef\u00bf\u00bd")
-_MOJI_RUN = re.compile(
-    r"[\u0080-\u00ff\u0152\u0153\u0160\u0161\u0178\u017d\u017e"
-    r"\u0192\u02c6\u02dc\u2013-\u203a\u20ac\u2122]{3,}"
-)
+_PLATFORM_PATTERNS = (_GOOGLE_TAG, _READ_MORE_TH, _READ_MORE_EN, _UI_LABEL)
+
+
+def _tidy_spaces(text):
+    """ยุบช่องว่างซ้อนที่เกิดจากการลบ และลบช่องว่างท้ายบรรทัด"""
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return text
 
 
 def _remove_platform_text(text):
     parts = _ORIGINAL_MARK.split(text)
     if len(parts) > 1:
         text = parts[-1]
-    for pattern in (_GOOGLE_TAG, _READ_MORE_TH, _READ_MORE_EN):
+    for pattern in _PLATFORM_PATTERNS:
         text = pattern.sub(" ", text)
-    return text.strip(" ,;")
+    return _tidy_spaces(text).strip(" ,;\n")
+
+
+# ---------- encoding error ----------
+# ร่องรอย mojibake: à/â/Ã/Â ตามด้วยอักขระช่วง cp1252/latin-1 หรือ "ï¿½"
+_MOJI_HINT = re.compile(r"[\u00e0\u00e2\u00c3\u00c2][\u0080-\u00ff\u0152-\u2122]|\u00ef\u00bf\u00bd")
+# เศษ mojibake ที่ยืนเดี่ยว เช่น "รับ Ã" (ไม่ได้เป็นส่วนหนึ่งของคำละติน)
+_MOJI_RESIDUE = re.compile(r"(?<![A-Za-z\u00c0-\u00ff])[\u00c3\u00c2](?![A-Za-z\u00c0-\u00ff])")
+_MOJI_RUN = re.compile(
+    r"[\u0080-\u00ff\u0152\u0153\u0160\u0161\u0178\u017d\u017e"
+    r"\u0192\u02c6\u02dc\u2013-\u203a\u20ac\u2122]{3,}"
+)
+_REPLACEMENT_CHAR = "\ufffd"
+# ไบต์ที่ cp1252 ไม่มีตัวอักษรรองรับ จึงมักหายไปตอนเกิด mojibake
+# ในภาษาไทยไบต์ที่หายบ่อยที่สุดคือ 0x81 (ก หรือ แ)
+_LOST_BYTE_GUESS = 0x81
+_MAX_GUESS_RATIO = 0.2
 
 
 def _to_bytes(run):
@@ -47,14 +81,72 @@ def _to_bytes(run):
     return bytes(out)
 
 
+def _restore_lost_thai_bytes(raw):
+    """เติมไบต์ที่หายของอักษรไทย (E0 B8/B9 ?) คืนจำนวนที่เติม"""
+    out = bytearray()
+    guesses = 0
+    i = 0
+    while i < len(raw):
+        b = raw[i]
+        if b == 0xE0 and i + 1 < len(raw) and raw[i + 1] in (0xB8, 0xB9):
+            third = raw[i + 2] if i + 2 < len(raw) else None
+            out += raw[i:i + 2]
+            if third is None or not (0x80 <= third <= 0xBF):
+                out.append(_LOST_BYTE_GUESS)
+                guesses += 1
+                i += 2
+            else:
+                out.append(third)
+                i += 3
+            continue
+        out.append(b)
+        i += 1
+    return bytes(out), guesses
+
+
+def _is_plausible(decoded):
+    """ผลถอดรหัสต้องเป็นไทย/ASCII/สัญลักษณ์/อีโมจิ ไม่ใช่อักษรภาษาอื่นแปลกๆ"""
+    for ch in decoded:
+        cp = ord(ch)
+        if cp < 0x80 or 0x0E00 <= cp <= 0x0E7F:
+            continue
+        if cp >= 0x2000 and not ch.isalpha():  # เครื่องหมาย, อีโมจิ
+            continue
+        return False
+    return True
+
+
+def _decode_run(run):
+    raw = _to_bytes(run)
+    try:
+        decoded = raw.decode("utf-8")
+        if _is_plausible(decoded):
+            return decoded
+    except UnicodeDecodeError:
+        pass
+
+    repaired, guesses = _restore_lost_thai_bytes(raw)
+    if guesses == 0:
+        return None
+    try:
+        decoded = repaired.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    thai_count = sum(1 for ch in decoded if "\u0e00" <= ch <= "\u0e7f")
+    # เดาได้เฉพาะเมื่อไบต์หายไม่มาก ถ้าหายเยอะแปลว่ากู้ไม่ได้จริง
+    if thai_count == 0 or guesses / thai_count > _MAX_GUESS_RATIO:
+        return None
+    return decoded if _is_plausible(decoded) else None
+
+
 def _fix_mojibake(text):
     def _fix(match):
-        try:
-            return _to_bytes(match.group()).decode("utf-8")
-        except (UnicodeEncodeError, UnicodeDecodeError):
-            return match.group()
+        decoded = _decode_run(match.group())
+        return decoded if decoded is not None else match.group()
 
     return _MOJI_RUN.sub(_fix, text)
+
+
 # PATTERNS: กฎที่ใช้ร่วมกันระหว่าง DETECT และ CLEAN
 
 # URL ที่ขึ้นต้นด้วย http://, https:// หรือ www.
@@ -279,18 +371,19 @@ def detect_stacked_tone_mark(text):
 def detect_platform_text(text):
     if not isinstance(text, str):
         return None
-    return bool(
-        _ORIGINAL_MARK.search(text)
-        or _GOOGLE_TAG.search(text)
-        or _READ_MORE_TH.search(text)
-        or _READ_MORE_EN.search(text)
+    return bool(_ORIGINAL_MARK.search(text)) or any(
+        p.search(text) for p in _PLATFORM_PATTERNS
     )
 
 
 def detect_encoding_error(text):
     if not isinstance(text, str):
         return None
-    return "\ufffd" in text or _MOJI_HINT.search(text) is not None
+    return (
+        _REPLACEMENT_CHAR in text
+        or _MOJI_HINT.search(text) is not None
+        or _MOJI_RESIDUE.search(text) is not None
+    )
 
 
 def detect_url(text):
@@ -433,9 +526,11 @@ def clean_encoding_error(text):
     if not detect_encoding_error(text):
         return text
     fixed = _fix_mojibake(text)
-    if detect_encoding_error(fixed):
-        return text
-    return fixed
+    # กู้ไม่ได้แล้ว ลบทิ้ง: อักขระแทนที่ (�) และเศษ Ã/Â ที่ยืนเดี่ยว
+    junk = r"[ \t]*(?:\ufffd|" + _MOJI_RESIDUE.pattern + r")+[ \t]*"
+    fixed = re.sub(junk, lambda m: " " if m.group() != m.group().strip() else "", fixed)
+    fixed = _tidy_spaces(fixed).strip() if fixed != text else fixed
+    return fixed if fixed else text
 
 
 def clean_html(text):
@@ -610,7 +705,7 @@ def inspect_review(review, previous_reviews):
         "id": review["id"],
         "text": text,
         "isDuplicate": detect_duplicate(review, previous_reviews),
-        "allForeign": detect_all_foreign(text),
+        "allForeign": detect_all_foreign(clean_encoding_error(text)),
         "emptyOrEmojiOnly": detect_empty_or_emoji_only(text),
         "hasHTML": detect_html(text),
         "hasZeroWidthSpace": detect_zero_width_space(text),
