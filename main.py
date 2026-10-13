@@ -365,31 +365,29 @@ def detect_staff_name(text):
 
 
 def detect_number(text):
-    # ตรวจเลขทั่วไป แต่ไม่นับเลขใน URL, Email และเบอร์โทรศัพท์
+    # ตรวจ Number/Price
+    # - นับเลขอารบิก 0-9
+    # - นับเลขไทย ๐-๙
+    # - นับ keycap number เช่น 1️⃣
+    # - ไม่นับเลขใน URL, Email, เบอร์โทร
+    # - ไม่นับ superscript เช่น ²
 
     if not isinstance(text, str) or not text:
         return False
 
     temp_text = text
 
-    # Email
-    email_pattern = re.compile(
-        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-        re.IGNORECASE
-    )
+    # ลบ Email ออกก่อน เพื่อไม่ให้เลขใน email ถูกนับ
+    temp_text = _CONTACT_EMAIL_PATTERN.sub(" ", temp_text)
 
-    # ลบ Email
-    temp_text = email_pattern.sub(" ", temp_text)
-
-    # ลบ URL โดยใช้ pattern กลาง
+    # ลบ URL ออกก่อน
     temp_text = _URL_PATTERN.sub(" ", temp_text)
 
-    # ลบเฉพาะเลขที่เป็นเบอร์โทรจริง
+    # ลบเบอร์โทรออก ยกเว้นถ้าอยู่ในบริบทราคา
     def remove_phone(match):
         before = match.string[:match.start()]
         after = match.string[match.end():]
 
-        # ถ้าเลขอยู่ในบริบทราคา ให้เก็บไว้เป็น Number
         price_before = re.search(
             r"(?:฿|ราคา|ราคา[:：]|ราคาเท่ากับ)[ \t]*$",
             before
@@ -406,10 +404,16 @@ def detect_number(text):
 
         return " "
 
-    temp_text = _PHONE_PATTERN.sub(remove_phone, temp_text)
+    temp_text = _CONTACT_PHONE_PATTERN.sub(remove_phone, temp_text)
 
-    # ถ้ายังมี digit เหลืออยู่ = พบ Number/Price
-    return any(char.isdigit() for char in temp_text)
+    # keycap เช่น 1️⃣ 2️⃣ 3️⃣
+    if re.search(r"[0-9]\ufe0f?\u20e3", temp_text):
+        return True
+
+    # เลขปกติ + เลขไทย
+    return bool(re.search(r"[0-9๐-๙]", temp_text))
+
+
 
 def detect_emoji(text):
     #ตรวจ Emoji รวมทั้ง emoji ทั่วไป, ธง, symbol, skin tone, keycap และ emoji แบบประกอบ
@@ -613,6 +617,101 @@ def clean_staff_name(text):
     )
     return text
 
+def clean_number(text):
+    if not isinstance(text, str):
+        return text
+
+    # แปลงเลขไทย ๐-๙ เป็นเลขอารบิก 0-9
+    thai_to_arabic = str.maketrans(
+        "๐๑๒๓๔๕๖๗๘๙",
+        "0123456789"
+    )
+    text = text.translate(thai_to_arabic)
+
+    # แปลง keycap number เช่น 1️⃣ -> 1
+    text = re.sub(r"([0-9])\ufe0f?\u20e3", r"\1", text)
+
+    return text
+
+
+def clean_emoji(text):
+    if not isinstance(text, str):
+        return text
+
+    # กลุ่ม emoji ที่สื่ออารมณ์/ความรู้สึก
+    # เช่น หน้า, สีหน้า, gesture, hand sign, heart
+    emotion_emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # faces
+        "\U0001F910-\U0001F92F"  # supplemental faces/gestures
+        "\U0001F970-\U0001F976"  # newer face emojis
+        "\U0001F97A"              # pleading face
+        "\U0001FAE0-\U0001FAE8"  # newer expressive faces
+        "\U0001F44A-\U0001F64F"  # hands / gestures / people gestures
+        "\U00002764"              # ❤️
+        "\U0001F493-\U0001F49F"  # hearts
+        "]"
+    )
+
+    # เก็บ emoji อารมณ์ไว้ชั่วคราว
+    kept = {}
+    counter = 0
+
+    def protect_emotion(match):
+        nonlocal counter
+
+        start = match.start()
+        end = match.end()
+
+        # รวม variation selector / skin tone ถ้ามี
+        while end < len(text) and (
+            text[end] == "\ufe0f"
+            or "\U0001F3FB" <= text[end] <= "\U0001F3FF"
+        ):
+            end += 1
+
+        emoji = text[start:end]
+        placeholder = f"__EMOTION_{counter}__"
+        kept[placeholder] = emoji
+        counter += 1
+        return placeholder
+
+    text = emotion_emoji_pattern.sub(protect_emotion, text)
+
+    # ลบ emoji อื่นที่ไม่ต้องการเก็บ
+    other_emoji_pattern = re.compile(
+        "["
+        "\U0001F1E6-\U0001F1FF"  # flags
+        "\U0001F170-\U0001F1FF"
+        "\U0001F200-\U0001F2FF"
+        "\U0001F300-\U0001F5FF"  # nature / objects
+        "\U0001F680-\U0001F6FF"  # transport / map
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA00-\U0001FAFF"
+        "\U00002600-\U000026FF"
+        "\U00002700-\U000027BF"
+        "\U00002B00-\U00002BFF"
+        "]"
+    )
+
+    text = other_emoji_pattern.sub("", text)
+
+    # ลบ variation selector / skin tone ที่หลงเหลือ
+    text = re.sub(
+        r"[\ufe0f\U0001F3FB-\U0001F3FF]",
+        "",
+        text
+    )
+
+    # คืน emoji อารมณ์กลับ
+    for placeholder, emoji in kept.items():
+        text = text.replace(placeholder, emoji)
+
+    # เก็บช่องว่างให้เรียบร้อย
+    text = re.sub(r"[ \t]{2,}", " ", text).strip()
+
+    return text
+
 
 def clean_review(text):
 
@@ -628,6 +727,8 @@ def clean_review(text):
         clean_url,
         clean_phone,
         clean_staff_name,
+        clean_number,
+        clean_emoji,
     ]
 
     for clean_function in cleaning_steps:
