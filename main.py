@@ -175,140 +175,161 @@ def detect_zero_width_space(text):
 
 
 # B2 Helper Constants & Functions
+# ----------------------------------------------------------
+# This section belongs to B2 only. No team-owned functions are changed.
+# DifferentUnicode = alternate encoding, misplaced order, detached marks.
+# StackedToneMark = duplicated/incompatible Thai combining marks.
+# One malformed span may meet both rule families. Keep that evidence.
+
 _B2_UPPER_VOWELS_SET = set('\u0e31\u0e34\u0e35\u0e36\u0e37\u0e47\u0e4d')
 _B2_LOWER_VOWELS_SET = set('\u0e38\u0e39\u0e3a')
 _B2_TONE_MARKS_SET = set('\u0e48\u0e49\u0e4a\u0e4b')
 _B2_THANTHAKHAT_SET = set('\u0e4c')
-_B2_ALL_DIACRITICS_SET = _B2_UPPER_VOWELS_SET | _B2_LOWER_VOWELS_SET | _B2_TONE_MARKS_SET | _B2_THANTHAKHAT_SET
-
-_B2_UPPER_VOWELS = r'\u0e31\u0e34-\u0e37\u0e47\u0e4d'
-_B2_LOWER_VOWELS = r'\u0e38\u0e39\u0e3a'
-_B2_TONES = r'\u0e48-\u0e4b'
-_B2_THANTHAKHAT = r'\u0e4c'
 _B2_SARA_AM = '\u0e33'
+
+_B2_MARK_RUN = re.compile(r'[\u0e31\u0e34-\u0e3a\u0e47-\u0e4d]+')
+_B2_DOUBLE_SARA_E = re.compile(r'(?<!\u0e40)\u0e40{2}(?!\u0e40)')
+_B2_TRIPLE_SARA_E = re.compile(r'\u0e40{3,}')
+_B2_SPLIT_AM_1 = re.compile(r'\u0e4d+([\u0e48-\u0e4b]*)[ \t]?\u0e32')
+_B2_SPLIT_AM_2 = re.compile(r'([\u0e48-\u0e4b]+)\u0e4d+[ \t]?\u0e32')
+_B2_REDUNDANT_AM = re.compile(r'\u0e4d+([\u0e48-\u0e4b]*)\u0e33')
+_B2_AM_THEN_TONE = re.compile(r'\u0e33([\u0e48-\u0e4b]+)')
+_B2_MISORDERED_TONE = re.compile(
+    r'[\u0e48-\u0e4b][\u0e31\u0e34-\u0e37\u0e38-\u0e39\u0e47]'
+)
+_B2_DETACHED = re.compile(r'(?:^|[ \t\r\n])[\u0e31-\u0e3a\u0e47-\u0e4e]')
+_B2_TAB_BEFORE_MARK = re.compile(
+    r'(?<=[\u0e01-\u0e2e])\t+(?=[\u0e31-\u0e3a\u0e47-\u0e4e])'
+)
+_B2_SARA_AM_CONFLICT = re.compile(
+    r'[\u0e31\u0e34-\u0e37\u0e38-\u0e39\u0e47][\u0e48-\u0e4b]*\u0e33|'
+    r'\u0e33[\u0e48-\u0e4b]*[\u0e31\u0e34-\u0e37\u0e38-\u0e39\u0e47]'
+)
+_B2_REPEATED_AM_MARK = re.compile(r'[\u0e4d\u0e33]{2,}')
+_B2_REPEATED_MARK = re.compile(r'([\u0e31\u0e34-\u0e3a\u0e47-\u0e4d])\1+')
+_B2_DUPLICATED_TONE_AROUND_VOWEL = re.compile(
+    r'([\u0e48-\u0e4b])([\u0e31\u0e34-\u0e37\u0e38-\u0e39\u0e47])\1'
+)
+
+# Single source of truth: Detect functions and detailed evidence use the
+# exact same compiled patterns. Changes to rules cannot silently diverge.
+_B2_DIFFERENT_RULES = (
+    ('D01', 'สระเอสองตัว (เเ แทน แ)', _B2_DOUBLE_SARA_E),
+    ('D02', 'นิคหิต + วรรณยุกต์ + สระอา', _B2_SPLIT_AM_1),
+    ('D03', 'วรรณยุกต์ + นิคหิต + สระอา', _B2_SPLIT_AM_2),
+    ('D04', 'นิคหิตเกินก่อนสระอำ', _B2_REDUNDANT_AM),
+    ('D05', 'สระอำอยู่ก่อนวรรณยุกต์', _B2_AM_THEN_TONE),
+    ('D06', 'วรรณยุกต์อยู่ก่อนสระบน/ล่าง', _B2_MISORDERED_TONE),
+    ('D07', 'เครื่องหมายภาษาไทยแยกจากฐาน', _B2_DETACHED),
+)
+_B2_STACKED_RULES = (
+    ('S01', 'สระเอสามตัวขึ้นไป (ไม่แก้โดยเดา)', _B2_TRIPLE_SARA_E),
+    ('S02', 'นิคหิต/สระอำซ้อน', _B2_REPEATED_AM_MARK),
+    ('S03', 'นิคหิตเกินก่อนสระอำ', _B2_REDUNDANT_AM),
+    ('S04', 'สระบน/ล่างขัดกับสระอำ', _B2_SARA_AM_CONFLICT),
+)
+
+
+def _b2_conflict_reasons(run):
+    """Describe a mark cluster; only conflicting marks count as stacked."""
+    tones = [ch for ch in run if ch in _B2_TONE_MARKS_SET]
+    karans = [ch for ch in run if ch in _B2_THANTHAKHAT_SET]
+    uppers = [ch for ch in run if ch in _B2_UPPER_VOWELS_SET]
+    lowers = [ch for ch in run if ch in _B2_LOWER_VOWELS_SET]
+    reasons = []
+    if len(tones) > 1:
+        reasons.append('วรรณยุกต์ซ้ำหรือขัดกัน')
+    if len(karans) > 1:
+        reasons.append('ทัณฑฆาตซ้ำ')
+    if tones and karans:
+        reasons.append('วรรณยุกต์ชนกับทัณฑฆาต')
+    if len(uppers) > 1:
+        reasons.append('สระ/เครื่องหมายบนหลายตัว')
+    if len(lowers) > 1:
+        reasons.append('สระล่างหลายตัว')
+    if uppers and lowers:
+        reasons.append('สระบนและสระล่างขัดกัน')
+    return reasons
+
+
+def _b2_is_conflicting_run(run):
+    return bool(_b2_conflict_reasons(run))
+
+
+def _b2_reorder_safe_marks(match):
+    """Reorder one tone after one upper/lower vowel, not conflicting runs."""
+    run = match.group(0)
+    if _b2_is_conflicting_run(run):
+        return run
+    if sum(ch in _B2_TONE_MARKS_SET for ch in run) != 1:
+        return run
+    return re.sub(
+        r'([\u0e48-\u0e4b])([\u0e31\u0e34-\u0e37\u0e38-\u0e39\u0e47])',
+        r'\2\1', run
+    )
+
+
+def b2_detection_evidence(text):
+    """Return exact matched spans in ORIGINAL text (Python 0-based offsets).
+
+    Each record has category, rule ID, explanation, start/end, matched text
+    and Unicode code points. A span may have more than one matching rule.
+    This is B2-only diagnostics; inspect_review() JSON schema is untouched.
+    """
+    if not isinstance(text, str):
+        return []
+    found = []
+    for category, rules in (
+        ('DifferentUnicode', _B2_DIFFERENT_RULES),
+        ('StackedToneMark', _B2_STACKED_RULES),
+    ):
+        for rule_id, reason, pattern in rules:
+            for hit in pattern.finditer(text):
+                s, e = hit.span()
+                if rule_id == 'D07':
+                    # Regex includes the preceding whitespace, which is not
+                    # the malformed Thai mark itself.
+                    while s < e and text[s].isspace():
+                        s += 1
+                if s >= e:
+                    continue
+                found.append({
+                    'category': category,
+                    'rule_id': rule_id,
+                    'reason': reason,
+                    'start': s,
+                    'end': e,
+                    'matched': text[s:e],
+                    'codepoints': ' '.join(f'U+{ord(ch):04X}' for ch in text[s:e]),
+                })
+    for hit in _B2_MARK_RUN.finditer(text):
+        reasons = _b2_conflict_reasons(hit.group(0))
+        if reasons:
+            found.append({
+                'category': 'StackedToneMark',
+                'rule_id': 'S05',
+                'reason': ' / '.join(reasons),
+                'start': hit.start(),
+                'end': hit.end(),
+                'matched': hit.group(0),
+                'codepoints': ' '.join(f'U+{ord(ch):04X}' for ch in hit.group(0)),
+            })
+    return sorted(found, key=lambda x: (x['start'], x['end'], x['category'], x['rule_id']))
 
 
 def detect_different_unicode(text):
+    """Detect Unicode variants / wrong order / detached combining marks."""
     if not isinstance(text, str):
         return False
-
-    # 1. Double Sara E check (exact length == 2 Sara E)
-    for m in re.finditer(r'\u0e40+', text):
-        if len(m.group(0)) == 2:
-            return True
-
-    # 2. Sara Am & Nikhahit misplaced / duplicate / combined checks
-    sara_am_pattern = (
-        rf'\u0e33[{_B2_TONES}]|'
-        rf'[{_B2_UPPER_VOWELS}{_B2_LOWER_VOWELS}][{_B2_TONES}]*\u0e33|'
-        rf'\u0e33[{_B2_TONES}]*[{_B2_UPPER_VOWELS}{_B2_LOWER_VOWELS}]|'
-        rf'\u0e4d[{_B2_TONES}]*\s*[\u0e32\u0e45]|'
-        rf'[{_B2_TONES}]\u0e4d\s*[\u0e32\u0e45]|'
-        rf'\u0e4d[\s\r\n]*[\u0e32\u0e45]|'
-        rf'\u0e4d[{_B2_TONES}]*\u0e33|'
-        rf'\u0e4d{{2,}}'
-    )
-    if re.search(sara_am_pattern, text):
-        return True
-
-    # 3. Detached diacritics after space/newline/tab or at start of string
-    if re.search(r'[\s\r\n\t][\u0e31-\u0e3a\u0e47-\u0e4e]|^[\u0e31-\u0e3a\u0e47-\u0e4e]', text):
-        return True
-
-    # 4. Cluster-by-cluster analysis for misordered / conflicting diacritics
-    clusters = []
-    curr_diacritics = []
-
-    for ch in text:
-        if ch in _B2_ALL_DIACRITICS_SET:
-            curr_diacritics.append(ch)
-        else:
-            if curr_diacritics:
-                clusters.append(curr_diacritics)
-                curr_diacritics = []
-    if curr_diacritics:
-        clusters.append(curr_diacritics)
-
-    for d_list in clusters:
-        dedup_d = []
-        for d in d_list:
-            if d not in dedup_d:
-                dedup_d.append(d)
-
-        # Tone mark before Upper Vowel or Lower Vowel
-        tone_seen = False
-        for d in dedup_d:
-            if d in _B2_TONE_MARKS_SET:
-                tone_seen = True
-            elif d in _B2_UPPER_VOWELS_SET or d in _B2_LOWER_VOWELS_SET:
-                if tone_seen:
-                    return True
-
-        # Conflicting tone marks or upper/lower vowels on same consonant
-        tones = [d for d in d_list if d in _B2_TONE_MARKS_SET or d in _B2_THANTHAKHAT_SET]
-        uppers = [d for d in d_list if d in _B2_UPPER_VOWELS_SET]
-        lowers = [d for d in d_list if d in _B2_LOWER_VOWELS_SET]
-
-        if len(set(tones)) > 1 or len(set(uppers)) > 1 or len(set(lowers)) > 1 or (uppers and lowers):
-            return True
-
-    return False
+    return any(e['category'] == 'DifferentUnicode' for e in b2_detection_evidence(text))
 
 
 def detect_stacked_tone_mark(text):
+    """Detect duplicated/conflicting marks, not expressive word stretching."""
     if not isinstance(text, str):
         return False
+    return any(e['category'] == 'StackedToneMark' for e in b2_detection_evidence(text))
 
-    # 1. Triple or more Sara E (e.g. เเเดิน)
-    for m in re.finditer(r'\u0e40+', text):
-        if len(m.group(0)) >= 3:
-            return True
-
-    # 2. Repeated trailing/inline vowels (e.g. าาา, ะะะ)
-    if re.search(r'([\u0e30\u0e32\u0e45])\1+', text):
-        return True
-
-    # 3. Nikhahit or Sara Am repeats (e.g. ํํ, ำำ)
-    if re.search(r'[\u0e4d\u0e33]{2,}', text):
-        return True
-
-    # 4. Upper/lower vowels combined with Sara Am (e.g. นิำ, จีำ, ถึ้ำ, นุ้ำ, ทูำ)
-    if re.search(rf'[{_B2_UPPER_VOWELS}{_B2_LOWER_VOWELS}][{_B2_TONES}]*\u0e33|\u0e33[{_B2_TONES}]*[{_B2_UPPER_VOWELS}{_B2_LOWER_VOWELS}]', text):
-        return True
-
-    clusters = []
-    curr_diacritics = []
-
-    for ch in text:
-        if ch in _B2_ALL_DIACRITICS_SET:
-            curr_diacritics.append(ch)
-        else:
-            if curr_diacritics:
-                clusters.append(curr_diacritics)
-                curr_diacritics = []
-    if curr_diacritics:
-        clusters.append(curr_diacritics)
-
-    for d_list in clusters:
-        seen_set = set()
-        for d in d_list:
-            if d in seen_set:
-                return True
-            seen_set.add(d)
-
-        tones_in_cluster = [d for d in d_list if d in _B2_TONE_MARKS_SET or d in _B2_THANTHAKHAT_SET]
-        if len(tones_in_cluster) > 1:
-            return True
-
-        uppers_in_cluster = [d for d in d_list if d in _B2_UPPER_VOWELS_SET]
-        lowers_in_cluster = [d for d in d_list if d in _B2_LOWER_VOWELS_SET]
-        if len(uppers_in_cluster) > 1 or len(lowers_in_cluster) > 1:
-            return True
-
-        if uppers_in_cluster and lowers_in_cluster:
-            return True
-
-    return False
 
 
 def detect_platform_text(text):
@@ -503,58 +524,46 @@ def clean_zero_width_space(text):
 
 
 def clean_different_unicode(text):
+    """Normalize only safe encodings/order; preserve ambiguity and paragraphs."""
     if not isinstance(text, str):
         return text
 
-    # Split text into segments around triple or more Sara E (\u0e40{3,})
-    # to avoid placeholder collisions while keeping triple Sara E untouched
-    parts = re.split(r'(\u0e40{3,})', text)
-    cleaned_parts = []
+    # Only EXACTLY two Sara E characters -> Sara Ae.
+    text = _B2_DOUBLE_SARA_E.sub('\u0e41', text)
 
-    for part in parts:
-        if re.fullmatch(r'\u0e40{3,}', part):
-            cleaned_parts.append(part)
-        else:
-            res = part
-            # Replaces exact double Sara E (\u0e40{2})
-            res = re.sub(r'(?<!\u0e40)\u0e40{2}(?!\u0e40)', '\u0e41', res)
+    # Remove tabs ONLY when between a Thai consonant and a combining mark:
+    # น\t้ำ -> น้ำ. Preserve paragraph newlines and other whitespace.
+    text = _B2_TAB_BEFORE_MARK.sub('', text)
 
-            # 1. Clean Nikhahit + Sara Am combinations (e.g. ทํำ -> ทำ, นํ้ำ -> น้ำ, ถํ้ำ -> ถ้ำ)
-            res = re.sub(rf'\u0e4d+([{_B2_TONES}]*)\u0e33', r'\1' + _B2_SARA_AM, res)
+    # Normal forms of split Sara Am; retain the tone where present.
+    text = _B2_SPLIT_AM_2.sub(lambda m: m.group(1) + _B2_SARA_AM, text)
+    text = _B2_SPLIT_AM_1.sub(lambda m: m.group(1) + _B2_SARA_AM, text)
+    text = _B2_REDUNDANT_AM.sub(lambda m: m.group(1) + _B2_SARA_AM, text)
+    text = _B2_AM_THEN_TONE.sub(lambda m: m.group(1) + _B2_SARA_AM, text)
 
-            # 3. Tone(s) + Nikhahit + Sara Aa (e.g. น้ํากัด -> น้ำกัด)
-            res = re.sub(rf'([{_B2_TONES}]+)\u0e4d+\s*([\u0e32\u0e45])', r'\1' + _B2_SARA_AM, res)
+    # Same tone before and after the same vowel: ช่ั่น -> ชั่น.
+    # Do not guess which tone to keep if they differ, e.g. ม่้.
+    text = _B2_DUPLICATED_TONE_AROUND_VOWEL.sub(r'\2\1', text)
 
-            # 4. Nikhahit + Tone(s) + Sara Aa (e.g. นํ้า -> น้ำ, ถํํ้้ามรกต -> ถ้ำมรกต)
-            res = re.sub(rf'\u0e4d+([{_B2_TONES}]+)\s*([\u0e32\u0e45])', r'\1' + _B2_SARA_AM, res)
-
-            # 5. Sara Am + Tone (e.g. นำ้ -> น้ำ)
-            res = re.sub(rf'\u0e33([{_B2_TONES}]+)', r'\1' + _B2_SARA_AM, res)
-
-            # 6. Nikhahit + whitespace/newline + Sara Aa (e.g. นํ า -> นำ)
-            res = re.sub(rf'\u0e4d+[\s\r\n]*([\u0e32\u0e45])', _B2_SARA_AM, res)
-
-            # 7. Reorder Tone mark before Upper/Lower Vowel (e.g. น้ัน -> นั้น, ป่ิ -> ปิ่)
-            res = re.sub(rf'([{_B2_TONES}]+)([{_B2_UPPER_VOWELS}]+)', r'\2\1', res)
-            res = re.sub(rf'([{_B2_TONES}]+)([{_B2_LOWER_VOWELS}]+)', r'\2\1', res)
-
-            res = reorder_vowels(res)
-            cleaned_parts.append(res)
-
-    return ''.join(cleaned_parts)
+    # Misordered pair: คร้ึม -> ครึ้ม, ไม่รู้ -> ไม่รู้.
+    text = _B2_MARK_RUN.sub(_b2_reorder_safe_marks, text)
+    return text
 
 
 def clean_stacked_tone_mark(text):
+    """Reduce identical stacked combining marks, not expressive plain vowels."""
     if not isinstance(text, str):
         return text
-
-    res = text
-    # Deduplicate repeated identical diacritics
-    res = re.sub(rf'([{_B2_TONES}{_B2_THANTHAKHAT}])\1+', r'\1', res)
-    res = re.sub(rf'([{_B2_UPPER_VOWELS}])\1+', r'\1', res)
-    res = re.sub(rf'([{_B2_LOWER_VOWELS}])\1+', r'\1', res)
-
-    return res
+    # One correction can expose another malformed mark in the same cluster.
+    # Iterate to a fixed point; never guess which different tone to keep.
+    # Safe edits either shrink a sequence or move marks to their canonical
+    # ordering; the number of required iterations is bounded by text length.
+    for _ in range(len(text) + 1):
+        cleaned = clean_different_unicode(_B2_REPEATED_MARK.sub(r'\1', text))
+        if cleaned == text:
+            return text
+        text = cleaned
+    return text
 
 
 def clean_platform_text(text):
