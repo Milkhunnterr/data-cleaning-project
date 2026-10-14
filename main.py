@@ -102,22 +102,31 @@ _PHONE_PRICE_AFTER = re.compile(
     r"[ \t]*(?:\+\+[ \t]*)?(?:บาท|฿|THB\b)", re.IGNORECASE
 )
 
-# ต้องมีบริบทพนักงาน/เจ้าหน้าที่/สมาชิก ไม่เดาชื่อจากข้อความทั่วไป
-# ใช้ตัวอักษรไทยจริง ไม่ใช้ [ก-๙] ซึ่งรวมเลขไทยและเครื่องหมายบางตัว
-# stop phrases ช่วยแยกคำบรรยายที่ติดชื่อ แต่ยังไม่ใช่ระบบ NER
+# กฎชื่อบุคคลเบื้องต้น (ชื่อเดิม STAFF คงไว้เพื่อให้ output เดิมใช้ต่อได้)
+# ตรวจชื่อที่มีคำเรียกนำหน้า ไม่ใช่ NER และไม่ยืนยันว่าผู้ถูกกล่าวถึงเป็นคน
+# ชื่อเปล่าไม่มีคำเรียก เช่น "สมชาย สุขใจ" ยังไม่ตรวจ เพื่อไม่เดาทุกคู่คำเป็นชื่อ
+_STAFF_TITLE = r"นางสาว|เด็กหญิง|เด็กชาย|คุณ|นาย|นาง|พี่|น้อง|ลุง|ป้า|น้า|อา|ตา|ยาย"
 _STAFF_STOP = (
     r"แนะนำ|บริการ|ช่วย|ดูแล|ต้อนรับ|พูด|ยิ้ม|น่ารัก|สุภาพ|ใจดี|"
     r"ดีมาก|ให้บริการ|ให้คำ|ทำงาน|ทำให้|บอกทาง|แถม|จำได้|"
-    r"ครับ|ค่ะ|คะ|นะคะ|มากๆ|เป็นพนักงาน|และ|\[NAME\]"
+    r"ครับ|ค่ะ|คะ|นะคะ|มากๆ|เป็นพนักงาน|และ|\[NAME\]|"
+    r"เดินเล่น|เที่ยว|พามา|ชอบ|อยาก|ต้อง|ไม่ได้|"
+    r"เป็น|คือ|ก็|จะ|ที่|ของ|กับ|ให้|แล้ว|แต่|เพื่อน|คน|เจ้าของ|"
+    r"จ๋า|จ้า|จ๊ะ|อร่อย"
 )
-_STAFF_WORD = rf"(?:(?!(?:{_STAFF_STOP}))[ก-ฮะ-ฺเ-๎A-Za-z])+"
+_STAFF_WORD = rf"[ก-ฮเ-ไA-Za-z](?:(?!(?:{_STAFF_STOP}))[ก-ฮะ-ฺเ-๎A-Za-z])*"
 _STAFF_NAME_PATTERN = re.compile(
-    r"(?P<prefix>(?:พนักงาน|เจ้าหน้าที่|สมาชิก)[ \t]*"
-    r"(?:ชื่อ[ \t]*(?:[:：][ \t]*)?(?:(?:คุณ|นางสาว|นาย|นาง)[ \t]*)?"
-    r"|(?:คุณ|นางสาว|นาย|นาง)[ \t]*))"
-    r"(?!(?:(?:คุณ|นางสาว|นาย|นาง)[ \t]*)?\[NAME\])"
-    rf"(?P<name>{_STAFF_WORD}(?:[ \t]+{_STAFF_WORD})?)"
+    r"(?<![A-Za-z0-9_])"
+    r"(?P<prefix>"
+    r"(?:พนักงาน|เจ้าหน้าที่|สมาชิก)[ \t]*"
+    rf"(?:ชื่อ[ \t]*(?:[:：][ \t]*)?(?:(?:{_STAFF_TITLE})[ \t]*)?|(?:{_STAFF_TITLE})[ \t]*)"
+    rf"|(?:{_STAFF_TITLE})[ \t]*"
+    r")"
+    rf"(?!(?:(?:{_STAFF_TITLE})[ \t]*)?\[NAME\])"
+    rf"(?!(?:{_STAFF_STOP}|ชาย|สาว|น้อง|พี่))"
+    rf"(?P<name>{_STAFF_WORD}(?:[ \t]+(?!(?:{_STAFF_STOP})){_STAFF_WORD})?)"
 )
+
 
 
 # DETECT
@@ -359,8 +368,10 @@ def detect_phone(text):
 
 
 def detect_staff_name(text):
-    """ตรวจชื่อ/นามสกุลหลังบริบทพนักงาน เจ้าหน้าที่ หรือสมาชิกตามกฎ"""
-    return _STAFF_NAME_PATTERN.search(text) is not None
+    """ตรวจชื่อบุคคลตามคำเรียก รวมชื่อ–นามสกุล; True คือพบตามกฎเท่านั้น"""
+    for match in _STAFF_NAME_PATTERN.finditer(text):
+        return True
+    return False
 
 
 
@@ -610,12 +621,14 @@ def clean_phone(text):
 
 
 def clean_staff_name(text):
-    """ปิดบังชื่อพนักงาน โดยคงคำนำหน้าและไม่เรียก Detect"""
-    text = _STAFF_NAME_PATTERN.sub(
-        lambda m: m['prefix'] + '[NAME]',
-        text,
-    )
+    """ค้นหาเองตามกฎเดียวกับ Detect และแทนเฉพาะชื่อด้วย [NAME]"""
+    matches = []
+    for match in _STAFF_NAME_PATTERN.finditer(text):
+        matches.append(match)
+    for match in reversed(matches):
+        text = text[:match.start('name')] + '[NAME]' + text[match.end('name'):]
     return text
+
 
 def clean_number(text):
     if not isinstance(text, str):
