@@ -4,9 +4,10 @@ import re
 from pathlib import Path
 
 #import library
-HTML_ENTITY_PATTERN = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});")
-HTML_TAG_PATTERN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
-ZERO_WIDTH_CHARS = {"\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"}
+_HTML_ENTITY_PATTERN = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});")
+_HTML_TAG_PATTERN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
+_HTML_BREAK_PATTERN = re.compile(r"<(?:br|/p|/div)[^>]*>", re.IGNORECASE)
+_ZERO_WIDTH_CHARS = {"\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"}
 from pythainlp.util import reorder_vowels
 import unicodedata
 
@@ -194,22 +195,31 @@ _PHONE_PRICE_AFTER = re.compile(
     r"[ \t]*(?:\+\+[ \t]*)?(?:บาท|฿|THB\b)", re.IGNORECASE
 )
 
-# ต้องมีบริบทพนักงาน/เจ้าหน้าที่/สมาชิก ไม่เดาชื่อจากข้อความทั่วไป
-# ใช้ตัวอักษรไทยจริง ไม่ใช้ [ก-๙] ซึ่งรวมเลขไทยและเครื่องหมายบางตัว
-# stop phrases ช่วยแยกคำบรรยายที่ติดชื่อ แต่ยังไม่ใช่ระบบ NER
+# กฎชื่อบุคคลเบื้องต้น (ชื่อเดิม STAFF คงไว้เพื่อให้ output เดิมใช้ต่อได้)
+# ตรวจชื่อที่มีคำเรียกนำหน้า ไม่ใช่ NER และไม่ยืนยันว่าผู้ถูกกล่าวถึงเป็นคน
+# ชื่อเปล่าไม่มีคำเรียก เช่น "สมชาย สุขใจ" ยังไม่ตรวจ เพื่อไม่เดาทุกคู่คำเป็นชื่อ
+_STAFF_TITLE = r"นางสาว|เด็กหญิง|เด็กชาย|คุณ|นาย|นาง|พี่|น้อง|ลุง|ป้า|น้า|อา|ตา|ยาย"
 _STAFF_STOP = (
     r"แนะนำ|บริการ|ช่วย|ดูแล|ต้อนรับ|พูด|ยิ้ม|น่ารัก|สุภาพ|ใจดี|"
     r"ดีมาก|ให้บริการ|ให้คำ|ทำงาน|ทำให้|บอกทาง|แถม|จำได้|"
-    r"ครับ|ค่ะ|คะ|นะคะ|มากๆ|เป็นพนักงาน|และ|\[NAME\]"
+    r"ครับ|ค่ะ|คะ|นะคะ|มากๆ|เป็นพนักงาน|และ|\[NAME\]|"
+    r"เดินเล่น|เที่ยว|พามา|ชอบ|อยาก|ต้อง|ไม่ได้|"
+    r"เป็น|คือ|ก็|จะ|ที่|ของ|กับ|ให้|แล้ว|แต่|เพื่อน|คน|เจ้าของ|"
+    r"จ๋า|จ้า|จ๊ะ|อร่อย"
 )
-_STAFF_WORD = rf"(?:(?!(?:{_STAFF_STOP}))[ก-ฮะ-ฺเ-๎A-Za-z])+"
+_STAFF_WORD = rf"[ก-ฮเ-ไA-Za-z](?:(?!(?:{_STAFF_STOP}))[ก-ฮะ-ฺเ-๎A-Za-z])*"
 _STAFF_NAME_PATTERN = re.compile(
-    r"(?P<prefix>(?:พนักงาน|เจ้าหน้าที่|สมาชิก)[ \t]*"
-    r"(?:ชื่อ[ \t]*(?:[:：][ \t]*)?(?:(?:คุณ|นางสาว|นาย|นาง)[ \t]*)?"
-    r"|(?:คุณ|นางสาว|นาย|นาง)[ \t]*))"
-    r"(?!(?:(?:คุณ|นางสาว|นาย|นาง)[ \t]*)?\[NAME\])"
-    rf"(?P<name>{_STAFF_WORD}(?:[ \t]+{_STAFF_WORD})?)"
+    r"(?<![A-Za-z0-9_])"
+    r"(?P<prefix>"
+    r"(?:พนักงาน|เจ้าหน้าที่|สมาชิก)[ \t]*"
+    rf"(?:ชื่อ[ \t]*(?:[:：][ \t]*)?(?:(?:{_STAFF_TITLE})[ \t]*)?|(?:{_STAFF_TITLE})[ \t]*)"
+    rf"|(?:{_STAFF_TITLE})[ \t]*"
+    r")"
+    rf"(?!(?:(?:{_STAFF_TITLE})[ \t]*)?\[NAME\])"
+    rf"(?!(?:{_STAFF_STOP}|ชาย|สาว|น้อง|พี่))"
+    rf"(?P<name>{_STAFF_WORD}(?:[ \t]+(?!(?:{_STAFF_STOP})){_STAFF_WORD})?)"
 )
+
 
 
 # DETECT
@@ -245,15 +255,19 @@ def detect_empty_or_emoji_only(text):
 
 
 def detect_html(text):
-    for match in HTML_ENTITY_PATTERN.findall(text):
+    if not text or not isinstance(text, str):
+        return False
+    for match in _HTML_ENTITY_PATTERN.findall(text):
         if html.unescape(match) != match:
             return True
-    return bool(HTML_TAG_PATTERN.search(text))
+    return bool(_HTML_TAG_PATTERN.search(text))
 
 
 def detect_zero_width_space(text):
+    if not text or not isinstance(text, str):
+        return False
     for i, char in enumerate(text):
-        if char not in ZERO_WIDTH_CHARS:
+        if char not in _ZERO_WIDTH_CHARS:
             continue
         if char == "\u200d":
             prev_char = text[i - 1] if i > 0 else ""
@@ -473,8 +487,10 @@ def detect_phone(text):
 
 
 def detect_staff_name(text):
-    """ตรวจชื่อ/นามสกุลหลังบริบทพนักงาน เจ้าหน้าที่ หรือสมาชิกตามกฎ"""
-    return _STAFF_NAME_PATTERN.search(text) is not None
+    """ตรวจชื่อบุคคลตามคำเรียก รวมชื่อ–นามสกุล; True คือพบตามกฎเท่านั้น"""
+    for match in _STAFF_NAME_PATTERN.finditer(text):
+        return True
+    return False
 
 
 
@@ -596,23 +612,29 @@ def clean_encoding_error(text):
 
 
 def clean_html(text):
-    text = HTML_TAG_PATTERN.sub("", text)
+    if not text or not isinstance(text, str):
+        return text
+    # แทนที่แท็กแบ่งบรรทัด/ย่อหน้าด้วยช่องว่าง เพื่อไม่ให้ข้อความหน้า-หลังติดกัน
+    text = _HTML_BREAK_PATTERN.sub(" ", text)
+    text = _HTML_TAG_PATTERN.sub("", text)
     text = html.unescape(text)
-    return text.replace("\u00a0", " ")
+    text = text.replace("\u00a0", " ")
+    return re.sub(r"[ \t]+", " ", text).strip()
 
 
 def clean_zero_width_space(text):
-    # ลบตัวอักษรล่องหน ยกเว้น ZWJ ที่เชื่อมอีโมจิ
+    if not text or not isinstance(text, str):
+        return text
     cleaned = []
     for i, char in enumerate(text):
-        if char not in ZERO_WIDTH_CHARS:
+        if char not in _ZERO_WIDTH_CHARS:
             cleaned.append(char)
             continue
         if char == "\u200d":
             prev_char = text[i - 1] if i > 0 else ""
             next_char = text[i + 1] if i + 1 < len(text) else ""
-            if (prev_char and prev_char not in ZERO_WIDTH_CHARS and ord(prev_char) >= 0x2190) or (
-                next_char and next_char not in ZERO_WIDTH_CHARS and ord(next_char) >= 0x2190
+            if (prev_char and prev_char not in _ZERO_WIDTH_CHARS and ord(prev_char) >= 0x2190) or (
+                next_char and next_char not in _ZERO_WIDTH_CHARS and ord(next_char) >= 0x2190
             ):
                 cleaned.append(char)
     return "".join(cleaned)
@@ -714,12 +736,14 @@ def clean_phone(text):
 
 
 def clean_staff_name(text):
-    """ปิดบังชื่อพนักงาน โดยคงคำนำหน้าและไม่เรียก Detect"""
-    text = _STAFF_NAME_PATTERN.sub(
-        lambda m: m['prefix'] + '[NAME]',
-        text,
-    )
+    """ค้นหาเองตามกฎเดียวกับ Detect และแทนเฉพาะชื่อด้วย [NAME]"""
+    matches = []
+    for match in _STAFF_NAME_PATTERN.finditer(text):
+        matches.append(match)
+    for match in reversed(matches):
+        text = text[:match.start('name')] + '[NAME]' + text[match.end('name'):]
     return text
+
 
 def clean_number(text):
     if not isinstance(text, str):
@@ -832,7 +856,6 @@ def clean_review(text):
         clean_phone,
         clean_staff_name,
         clean_number,
-        clean_emoji,
     ]
 
     for clean_function in cleaning_steps:
