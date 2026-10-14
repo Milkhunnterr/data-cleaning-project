@@ -741,7 +741,6 @@ def clean_review(text):
         clean_phone,
         clean_staff_name,
         clean_number,
-        clean_emoji,
     ]
 
     for clean_function in cleaning_steps:
