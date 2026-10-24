@@ -1,328 +1,499 @@
+"""Extract raw review strings from XLSX files or ZIP archives.
+
+Only ``reviews!G3:G...`` is read. The output remains a JSON array of strings;
+source information is retained only in memory for the duplicate-text report.
 """
-extract_text.py
----------------
-สกัดข้อความรีวิวจากไฟล์ Excel หลายไฟล์ แล้วรวมออกมาเป็น JSON array
 
-รองรับสองโหมด:
-  1. โฟลเดอร์ปกติ  → อ่าน .xlsx โดยตรงในโฟลเดอร์นั้น
-  2. โฟลเดอร์ data  → อ่าน .xlsx ที่อยู่ภายในไฟล์ .zip ในโฟลเดอร์นั้น
-     (สแกนหา .zip ทุกไฟล์ แล้วอ่าน .xlsx ข้างในผ่าน BytesIO)
-
-วิธีใช้ (โหมดโฟลเดอร์ปกติ):
-    python extract_text.py --input-dir "./excel" --output "./data.json"
-
-วิธีใช้ (โหมดโฟลเดอร์ที่มี ZIP):
-    python extract_text.py --input-dir "./data" --output "./data.json"
-
-dependency:
-    pip install openpyxl
-"""
+from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
+import os
 import sys
+import tempfile
 import zipfile
-from pathlib import Path
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import BinaryIO, Iterable
 
 import openpyxl
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ฟังก์ชัน: สกัดรีวิวจาก workbook object (ใช้ร่วมกันทั้งสองโหมด)
-# ─────────────────────────────────────────────────────────────────────────────
+SHEET_NAME = "reviews"
+FIRST_REVIEW_ROW = 3
+KNOWN_HEADER = "ข้อความรีวิว (ไทย, anonymized)"
+COMBINED_XLSX_NAME = "รวมไฟล์.xlsx"
 
-def _extract_from_workbook(wb, display_name: str) -> list[str]:
-    """
-    รับ openpyxl workbook และชื่อที่ใช้แสดงผล
-    คืนรายการข้อความจากชีต 'reviews' คอลัมน์ G ตั้งแต่แถว 3
 
-    ยกเว้น: ValueError ถ้าไม่พบชีต 'reviews'
-    """
-    # ตรวจว่ามีชีต 'reviews' หรือไม่
-    if "reviews" not in wb.sheetnames:
-        raise ValueError("ไม่พบชีตชื่อ 'reviews'")
+class ExtractionError(Exception):
+    """An input-selection or source-reading error that must abort the run."""
 
-    ws = wb["reviews"]
-    reviews: list[str] = []
 
-    # วนอ่านทุกแถวตั้งแต่แถวที่ 3 เป็นต้นไป (col G = index 7)
-    for row in ws.iter_rows(min_row=3, min_col=7, max_col=7):
+@dataclass(frozen=True)
+class Source:
+    zip_name: str | None
+    excel_name: str
+    sheet: str
+    row: int
+
+    def format(self) -> str:
+        parts = []
+        if self.zip_name is not None:
+            parts.append(f"ZIP={self.zip_name}")
+        parts.extend(
+            (f"Excel={self.excel_name}", f"ชีต={self.sheet}", f"แถว={self.row}")
+        )
+        return " / ".join(parts)
+
+
+@dataclass(frozen=True)
+class Review:
+    text: str
+    source: Source
+
+
+@dataclass
+class Stats:
+    zip_read: int = 0
+    zip_duplicate_skipped: int = 0
+    xlsx_read: int = 0
+    xlsx_duplicate_skipped: int = 0
+    combined_xlsx_skipped: int = 0
+    seen_zip_hashes: dict[str, str] = field(default_factory=dict)
+    seen_xlsx_hashes: dict[str, str] = field(default_factory=dict)
+
+
+def _sha256_stream(stream: BinaryIO) -> str:
+    digest = hashlib.sha256()
+    for block in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(block)
+    return digest.hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    try:
+        with path.open("rb") as stream:
+            return _sha256_stream(stream)
+    except OSError as exc:
+        raise ExtractionError(f"อ่านไฟล์ไม่ได้: {path}: {exc}") from exc
+
+
+def _xlsx_label(zip_name: str | None, excel_name: str) -> str:
+    return excel_name if zip_name is None else f"{zip_name}/{excel_name}"
+
+
+def _extract_records_from_workbook(
+    wb, *, zip_name: str | None, excel_name: str
+) -> list[Review]:
+    label = _xlsx_label(zip_name, excel_name)
+    if SHEET_NAME not in wb.sheetnames:
+        raise ExtractionError(f"{label}: ไม่พบชีตชื่อ '{SHEET_NAME}'")
+
+    ws = wb[SHEET_NAME]
+    header_value = ws["G2"].value
+    header_names = {KNOWN_HEADER}
+    if isinstance(header_value, str):
+        header_names.add(header_value.strip())
+
+    records: list[Review] = []
+    for row_number, row in enumerate(
+        ws.iter_rows(min_row=FIRST_REVIEW_ROW, min_col=7, max_col=7),
+        start=FIRST_REVIEW_ROW,
+    ):
         cell = row[0]
+        source = Source(zip_name, excel_name, SHEET_NAME, row_number)
 
-        # ข้ามเซลล์ที่ไม่มีค่า
-        if cell.value is None:
+        # Workbooks are loaded with data_only=False so formulas remain visible.
+        if cell.data_type == "f":
+            print(f"  [ข้ามสูตร] {source.format()} / เซลล์=G{row_number}")
             continue
 
-        # ตรวจประเภท: ต้องเป็น str เท่านั้น
-        if not isinstance(cell.value, str):
+        value = cell.value
+        if value is None:
+            continue
+        if not isinstance(value, str):
             print(
-                f"  [เตือน] {display_name} แถว {cell.row}: "
-                f"ค่าไม่ใช่ข้อความ (ประเภท {type(cell.value).__name__}) — ข้าม"
+                f"  [ข้ามค่าที่ไม่ใช่ string] {source.format()} / "
+                f"เซลล์=G{row_number} / ประเภท={type(value).__name__}"
             )
             continue
 
-        # ข้ามข้อความที่ว่างเปล่า (strip() ใช้แค่ตรวจ ไม่แก้ค่าจริง)
-        if not cell.value.strip():
+        stripped = value.strip()
+        if not stripped:
+            continue
+        if stripped in header_names:
+            print(f"  [ข้ามหัวตาราง] {source.format()}")
             continue
 
-        # เก็บข้อความดิบ — ห้ามแก้ไขเด็ดขาด
-        reviews.append(cell.value)
+        # Preserve the exact original cell string in the output.
+        records.append(Review(value, source))
 
-    return reviews
+    return records
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ฟังก์ชัน: สกัดรีวิวจากไฟล์ .xlsx บนดิสก์
-# ─────────────────────────────────────────────────────────────────────────────
-
-def extract_reviews_from_file(xlsx_path: Path) -> list[str]:
-    """
-    อ่านไฟล์ .xlsx บนดิสก์ คืนรายการรีวิวจากชีต 'reviews' คอลัมน์ G
-
-    ยกเว้น: ValueError ถ้าไม่พบชีต 'reviews'
-             RuntimeError ถ้าเปิดไฟล์ไม่ได้
-    """
+def _load_records_from_bytes(
+    data: bytes, *, zip_name: str | None, excel_name: str
+) -> list[Review]:
+    label = _xlsx_label(zip_name, excel_name)
     try:
-        # read_only=True เพื่อไม่แก้ไขต้นฉบับ, data_only=True เพื่อดึงค่าจากสูตร
-        wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+        wb = openpyxl.load_workbook(
+            io.BytesIO(data), read_only=True, data_only=False
+        )
     except Exception as exc:
-        raise RuntimeError(f"เปิดไฟล์ไม่ได้: {exc}") from exc
+        raise ExtractionError(f"{label}: เปิด XLSX ไม่ได้: {exc}") from exc
 
     try:
-        return _extract_from_workbook(wb, xlsx_path.name)
+        return _extract_records_from_workbook(
+            wb, zip_name=zip_name, excel_name=excel_name
+        )
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        raise ExtractionError(f"{label}: อ่าน XLSX ไม่ได้: {exc}") from exc
     finally:
         wb.close()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ฟังก์ชัน: สกัดรีวิวจากไฟล์ .xlsx ภายใน ZIP (อ่านผ่าน BytesIO)
-# ─────────────────────────────────────────────────────────────────────────────
+# Retain the old helpers' list[str] interface for existing callers.
+def extract_reviews_from_file(xlsx_path: Path) -> list[str]:
+    try:
+        data = xlsx_path.read_bytes()
+        records = _load_records_from_bytes(
+            data, zip_name=None, excel_name=xlsx_path.name
+        )
+    except ExtractionError as exc:
+        if "ไม่พบชีต" in str(exc):
+            raise ValueError("ไม่พบชีตชื่อ 'reviews'") from exc
+        raise RuntimeError(str(exc)) from exc
+    except OSError as exc:
+        raise RuntimeError(f"เปิดไฟล์ไม่ได้: {exc}") from exc
+    return [record.text for record in records]
+
 
 def extract_reviews_from_zip_entry(
     zf: zipfile.ZipFile, entry_name: str, zip_filename: str
 ) -> list[str]:
-    """
-    อ่านไฟล์ .xlsx จาก entry ภายใน zipfile object โดยใช้ BytesIO
-    ไม่สกัดไฟล์ลงดิสก์ — ทุกอย่างเกิดใน RAM
-
-    display_name ที่ใช้แสดงเตือน: "ชื่อzip/ชื่อentry"
-
-    ยกเว้น: ValueError ถ้าไม่พบชีต 'reviews'
-             RuntimeError ถ้าอ่าน entry ไม่ได้
-    """
-    # ชื่อที่ใช้แสดงในข้อความเตือน เช่น "Dream_Team_2.1.zip/01_xx.xlsx"
-    entry_basename = Path(entry_name).name
-    display_name = f"{zip_filename}/{entry_basename}"
-
     try:
-        # อ่าน bytes ของ .xlsx เข้า RAM แล้วห่อด้วย BytesIO
         data = zf.read(entry_name)
-        xlsx_buffer = io.BytesIO(data)
-        wb = openpyxl.load_workbook(xlsx_buffer, read_only=True, data_only=True)
+        records = _load_records_from_bytes(
+            data, zip_name=zip_filename, excel_name=entry_name
+        )
+    except ExtractionError as exc:
+        if "ไม่พบชีต" in str(exc):
+            raise ValueError("ไม่พบชีตชื่อ 'reviews'") from exc
+        raise RuntimeError(str(exc)) from exc
     except Exception as exc:
         raise RuntimeError(f"อ่าน entry ไม่ได้: {exc}") from exc
+    return [record.text for record in records]
+
+
+def _read_xlsx_data(
+    data: bytes,
+    *,
+    zip_name: str | None,
+    excel_name: str,
+    stats: Stats,
+) -> list[Review]:
+    label = _xlsx_label(zip_name, excel_name)
+    digest = hashlib.sha256(data).hexdigest()
+    first_label = stats.seen_xlsx_hashes.get(digest)
+    if first_label is not None:
+        stats.xlsx_duplicate_skipped += 1
+        print(f"  [ข้าม XLSX ซ้ำ] {label} ซ้ำกับ {first_label}")
+        return []
+
+    records = _load_records_from_bytes(
+        data, zip_name=zip_name, excel_name=excel_name
+    )
+    stats.seen_xlsx_hashes[digest] = label
+    stats.xlsx_read += 1
+    print(f"  [อ่าน XLSX] {label} -> {len(records):,} รีวิว")
+    return records
+
+
+def _read_xlsx_path(path: Path, stats: Stats) -> list[Review]:
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise ExtractionError(f"{path}: อ่าน XLSX ไม่ได้: {exc}") from exc
+    return _read_xlsx_data(
+        data, zip_name=None, excel_name=path.name, stats=stats
+    )
+
+
+def _xlsx_entries(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    return sorted(
+        (
+            info
+            for info in zf.infolist()
+            if not info.is_dir()
+            and info.filename.lower().endswith(".xlsx")
+            and not PurePosixPath(info.filename).name.startswith("~$")
+        ),
+        key=lambda info: info.filename,
+    )
+
+
+def _read_zip_path(path: Path, stats: Stats) -> list[Review]:
+    digest = _sha256_file(path)
+    first_name = stats.seen_zip_hashes.get(digest)
+    if first_name is not None:
+        stats.zip_duplicate_skipped += 1
+        print(f"[ข้าม ZIP ซ้ำ] {path.name} ซ้ำกับ {first_name}")
+        return []
 
     try:
-        return _extract_from_workbook(wb, display_name)
-    finally:
-        wb.close()
+        with zipfile.ZipFile(path, "r") as zf:
+            entries = _xlsx_entries(zf)
+            if not entries:
+                raise ExtractionError(f"{path.name}: ไม่พบ XLSX ภายใน ZIP")
+
+            records: list[Review] = []
+            for entry_info in entries:
+                entry_name = entry_info.filename
+                if PurePosixPath(entry_name).name == COMBINED_XLSX_NAME:
+                    stats.combined_xlsx_skipped += 1
+                    print(
+                        f"  [ข้ามไฟล์รวม] {path.name}/{entry_name} "
+                        "เพราะซ้ำกับไฟล์รายสถานที่"
+                    )
+                    continue
+                try:
+                    data = zf.read(entry_info)
+                except Exception as exc:
+                    raise ExtractionError(
+                        f"{path.name}/{entry_name}: อ่าน XLSX จาก ZIP ไม่ได้: {exc}"
+                    ) from exc
+                records.extend(
+                    _read_xlsx_data(
+                        data,
+                        zip_name=path.name,
+                        excel_name=entry_name,
+                        stats=stats,
+                    )
+                )
+    except ExtractionError:
+        raise
+    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise ExtractionError(f"{path.name}: เปิด ZIP ไม่ได้: {exc}") from exc
+
+    stats.seen_zip_hashes[digest] = path.name
+    stats.zip_read += 1
+    return records
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ฟังก์ชัน: รวบรวมรีวิวจากโฟลเดอร์ (โหมดไฟล์บนดิสก์)
-# ─────────────────────────────────────────────────────────────────────────────
+def _supported_files(input_dir: Path) -> tuple[list[Path], list[Path]]:
+    try:
+        children = list(input_dir.iterdir())
+    except OSError as exc:
+        raise ExtractionError(f"อ่านโฟลเดอร์ไม่ได้: {input_dir}: {exc}") from exc
 
-def collect_reviews_from_dir(input_dir: Path) -> list[str]:
-    """
-    ค้นหา .xlsx โดยตรงในโฟลเดอร์ (ไม่รวมโฟลเดอร์ย่อย)
-    เรียงตามชื่อไฟล์จากน้อยไปมาก
-    """
-    xlsx_files = sorted(
-        [
-            f for f in input_dir.glob("*.xlsx")
-            if not f.name.startswith("~$")  # ข้ามไฟล์ชั่วคราวของ Excel
-        ],
-        key=lambda f: f.name,
+    zip_files = sorted(
+        (p for p in children if p.is_file() and p.suffix.lower() == ".zip"),
+        key=lambda p: p.name,
     )
-
-    if not xlsx_files:
-        print(f"[ผิดพลาด] ไม่พบไฟล์ .xlsx ในโฟลเดอร์: {input_dir}")
-        return []
-
-    all_reviews: list[str] = []
-
-    for xlsx_path in xlsx_files:
-        print(f"\nกำลังอ่าน: {xlsx_path.name}")
-        try:
-            file_reviews = extract_reviews_from_file(xlsx_path)
-        except ValueError as exc:
-            print(f"  [เตือน] {xlsx_path.name}: {exc} — ข้ามไฟล์นี้")
-            continue
-        except RuntimeError as exc:
-            print(f"  [ผิดพลาด] {xlsx_path.name}: {exc} — ข้ามไฟล์นี้")
-            continue
-
-        print(f"  -> สกัดได้ {len(file_reviews):,} รีวิว")
-        all_reviews.extend(file_reviews)
-
-    return all_reviews
+    xlsx_files = sorted(
+        (
+            p
+            for p in children
+            if p.is_file()
+            and p.suffix.lower() == ".xlsx"
+            and not p.name.startswith("~$")
+        ),
+        key=lambda p: p.name,
+    )
+    return zip_files, xlsx_files
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ฟังก์ชัน: รวบรวมรีวิวจากโฟลเดอร์ที่มีไฟล์ ZIP (โหมด ZIP)
-# ─────────────────────────────────────────────────────────────────────────────
+def select_inputs(
+    *, input_file: Path | None, input_dir: Path | None
+) -> tuple[str, list[Path]]:
+    if input_file is not None:
+        if not input_file.is_file():
+            raise ExtractionError(f"ไม่พบไฟล์ input: {input_file}")
+        suffix = input_file.suffix.lower()
+        if suffix not in {".zip", ".xlsx"}:
+            raise ExtractionError("--input-file ต้องเป็นไฟล์ .zip หรือ .xlsx")
+        if suffix == ".xlsx" and input_file.name.startswith("~$"):
+            raise ExtractionError("ไม่อ่านไฟล์ Excel ชั่วคราวที่ขึ้นต้นด้วย ~$")
+        return suffix[1:], [input_file]
+
+    assert input_dir is not None  # argparse enforces one input option.
+    if not input_dir.is_dir():
+        raise ExtractionError(f"ไม่พบโฟลเดอร์ input: {input_dir}")
+    zip_files, xlsx_files = _supported_files(input_dir)
+    if zip_files and xlsx_files:
+        raise ExtractionError(
+            "พบทั้ง ZIP และ XLSX ในโฟลเดอร์เดียวกัน "
+            "โปรดใช้ --input-file หรือแยกไฟล์ให้เหลือชนิดเดียว"
+        )
+    selected = zip_files or xlsx_files
+    if not selected:
+        raise ExtractionError(f"ไม่พบไฟล์ .zip หรือ .xlsx ใน: {input_dir}")
+
+    print("ไฟล์ที่จะอ่าน (เรียงตามชื่อ):")
+    for path in selected:
+        print(f"  - {path.name}")
+    return ("zip" if zip_files else "xlsx"), selected
+
+
+def collect_records(mode: str, paths: Iterable[Path]) -> tuple[list[Review], Stats]:
+    records: list[Review] = []
+    stats = Stats()
+    for path in paths:
+        records.extend(
+            _read_zip_path(path, stats)
+            if mode == "zip"
+            else _read_xlsx_path(path, stats)
+        )
+    return records, stats
+
+
+# Compatibility wrappers for callers of the previous module API.
+def collect_reviews_from_dir(input_dir: Path) -> list[str]:
+    zip_files, paths = _supported_files(input_dir)
+    if zip_files:
+        raise ExtractionError("โฟลเดอร์มี ZIP; ฟังก์ชันนี้รับเฉพาะ XLSX")
+    records, _ = collect_records("xlsx", paths)
+    return [record.text for record in records]
+
 
 def collect_reviews_from_zips(input_dir: Path) -> list[str]:
-    """
-    ค้นหาไฟล์ .zip ในโฟลเดอร์ input_dir (ไม่รวมโฟลเดอร์ย่อย)
-    เรียง ZIP จากน้อยไปมาก จากนั้นสำหรับแต่ละ ZIP:
-      - เรียงรายชื่อ .xlsx ภายใน ZIP จากน้อยไปมาก
-      - ข้าม entry ที่เป็นโฟลเดอร์ หรือชื่อขึ้นต้นด้วย ~$
-      - อ่านแต่ละ .xlsx ผ่าน BytesIO (ไม่แตะดิสก์)
-    """
-    zip_files = sorted(
-        [f for f in input_dir.glob("*.zip")],
-        key=lambda f: f.name,
-    )
+    paths, xlsx_files = _supported_files(input_dir)
+    if xlsx_files:
+        raise ExtractionError("โฟลเดอร์มี XLSX; ฟังก์ชันนี้รับเฉพาะ ZIP")
+    records, _ = collect_records("zip", paths)
+    return [record.text for record in records]
 
-    if not zip_files:
-        print(f"[ผิดพลาด] ไม่พบไฟล์ .zip ในโฟลเดอร์: {input_dir}")
-        return []
-
-    all_reviews: list[str] = []
-
-    for zip_path in zip_files:
-        print(f"\n=== เปิด ZIP: {zip_path.name} ===")
-
-        try:
-            zf = zipfile.ZipFile(zip_path, "r")
-        except Exception as exc:
-            print(f"  [ผิดพลาด] เปิด ZIP ไม่ได้: {exc} — ข้าม")
-            continue
-
-        with zf:
-            # กรองเฉพาะ entry ที่เป็น .xlsx และไม่ใช่โฟลเดอร์
-            xlsx_entries = sorted(
-                [
-                    name for name in zf.namelist()
-                    if name.lower().endswith(".xlsx")
-                    and not name.endswith("/")                    # ไม่ใช่โฟลเดอร์
-                    and not Path(name).name.startswith("~$")     # ไม่ใช่ชั่วคราว
-                ],
-                key=lambda name: name,  # เรียงตาม path ภายใน ZIP
-            )
-
-            if not xlsx_entries:
-                print(f"  [เตือน] ไม่พบไฟล์ .xlsx ใน {zip_path.name} — ข้าม")
-                continue
-
-            for entry_name in xlsx_entries:
-                entry_basename = Path(entry_name).name
-                print(f"\n  กำลังอ่าน: {entry_name}")
-                try:
-                    file_reviews = extract_reviews_from_zip_entry(
-                        zf, entry_name, zip_path.name
-                    )
-                except ValueError as exc:
-                    print(f"    [เตือน] {entry_basename}: {exc} — ข้ามไฟล์นี้")
-                    continue
-                except RuntimeError as exc:
-                    print(f"    [ผิดพลาด] {entry_basename}: {exc} — ข้ามไฟล์นี้")
-                    continue
-
-                print(f"    -> สกัดได้ {len(file_reviews):,} รีวิว")
-                all_reviews.extend(file_reviews)
-
-    return all_reviews
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ฟังก์ชัน: ตัดสินใจโหมดและเรียกใช้ฟังก์ชันที่เหมาะสม
-# ─────────────────────────────────────────────────────────────────────────────
 
 def collect_reviews(input_dir: Path) -> list[str]:
-    """
-    ตรวจโฟลเดอร์ input_dir:
-      - ถ้ามีไฟล์ .zip อยู่ → ใช้โหมด ZIP
-      - ถ้ามีแต่ .xlsx      → ใช้โหมดไฟล์ปกติ
-      - ถ้าไม่มีเลย         → แจ้งเตือนแล้วคืน list ว่าง
-    """
-    has_zip = any(input_dir.glob("*.zip"))
-    has_xlsx = any(
-        f for f in input_dir.glob("*.xlsx") if not f.name.startswith("~$")
+    mode, paths = select_inputs(input_file=None, input_dir=input_dir)
+    records, _ = collect_records(mode, paths)
+    return [record.text for record in records]
+
+
+def print_file_summary(stats: Stats) -> None:
+    print("\nสรุปไฟล์:")
+    print(f"  ZIP ที่อ่านจริง: {stats.zip_read:,}")
+    print(f"  ZIP ที่ข้ามเพราะเนื้อหาซ้ำ: {stats.zip_duplicate_skipped:,}")
+    print(f"  XLSX ที่อ่านจริง: {stats.xlsx_read:,}")
+    print(f"  XLSX ที่ข้ามเพราะเนื้อหาซ้ำ: {stats.xlsx_duplicate_skipped:,}")
+    print(f"  XLSX รวมที่ข้าม: {stats.combined_xlsx_skipped:,}")
+
+
+def print_duplicate_report(records: list[Review]) -> None:
+    groups: dict[str, list[Review]] = defaultdict(list)
+    first_index: dict[str, int] = {}
+    for index, record in enumerate(records):
+        key = record.text.strip()
+        groups[key].append(record)
+        first_index.setdefault(key, index)
+
+    total = len(records)
+    unique = len(groups)
+    duplicate_excess = total - unique
+    duplicate_groups = [items for items in groups.values() if len(items) > 1]
+    duplicate_groups.sort(
+        key=lambda items: (-len(items), first_index[items[0].text.strip()])
     )
 
-    if has_zip:
-        print("[โหมด] พบไฟล์ .zip — อ่านจาก ZIP")
-        return collect_reviews_from_zips(input_dir)
-    elif has_xlsx:
-        print("[โหมด] พบไฟล์ .xlsx — อ่านจากโฟลเดอร์โดยตรง")
-        return collect_reviews_from_dir(input_dir)
-    else:
-        print(f"[ผิดพลาด] ไม่พบไฟล์ .xlsx หรือ .zip ในโฟลเดอร์: {input_dir}")
-        return []
+    print("\nรายงานข้อความซ้ำ (เปรียบเทียบทั้งข้อความหลัง strip):")
+    print(f"  ข้อความทั้งหมด: {total:,}")
+    print(f"  ข้อความไม่ซ้ำ: {unique:,}")
+    print(f"  รายการซ้ำส่วนเกิน: {duplicate_excess:,}")
+    print(
+        "  หมายเหตุ: รายงานนี้ตรวจเพียงข้อความที่เหมือนกัน "
+        "ไม่ได้ยืนยันว่าเป็นรีวิวจากบุคคลเดียวกัน"
+    )
+
+    if not duplicate_groups:
+        print("  ไม่พบกลุ่มข้อความซ้ำ")
+        return
+
+    print("  ตัวอย่างกลุ่มซ้ำสูงสุด (ไม่เกิน 10 กลุ่ม):")
+    for number, items in enumerate(duplicate_groups[:10], start=1):
+        print(f"  {number}. {items[0].text.strip()!r} — {len(items):,} ครั้ง")
+        for item in items:
+            print(f"     - {item.source.format()}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────────────────────────────────────────
+def atomic_write_json(output_path: Path, texts: list[str]) -> None:
+    parent = output_path.parent
+    if not parent.is_dir():
+        raise ExtractionError(f"ไม่พบโฟลเดอร์ปลายทาง: {parent}")
 
-def parse_args() -> argparse.Namespace:
-    """กำหนดและแยก command-line arguments"""
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_name = temp_file.name
+            json.dump(texts, temp_file, ensure_ascii=False, indent=2)
+            temp_file.write("\n")
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_name, output_path)
+    except Exception as exc:
+        if temp_name is not None:
+            try:
+                Path(temp_name).unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise ExtractionError(f"เขียน output ไม่สำเร็จ: {output_path}: {exc}") from exc
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "สกัดข้อความรีวิวจากไฟล์ Excel (.xlsx) และบันทึกเป็น JSON array\n"
-            "รองรับทั้งโฟลเดอร์ที่มี .xlsx โดยตรง และโฟลเดอร์ที่มีไฟล์ .zip ซึ่งภายในบรรจุ .xlsx"
-        )
+        description="สกัด reviews!G3:G... เป็น JSON array โดยไม่แก้ข้อความต้นฉบับ"
+    )
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument(
+        "--input-file", metavar="FILE", help="ไฟล์ .zip หรือ .xlsx หนึ่งไฟล์"
+    )
+    inputs.add_argument(
+        "--input-dir", metavar="DIR", help="โฟลเดอร์ที่มี ZIP หรือ XLSX ชนิดเดียว"
     )
     parser.add_argument(
-        "--input-dir",
-        required=True,
-        metavar="DIR",
-        help="โฟลเดอร์ที่เก็บไฟล์ .xlsx หรือ .zip",
+        "--output", required=True, metavar="FILE", help="ไฟล์ JSON ปลายทาง"
     )
-    parser.add_argument(
-        "--output",
-        required=True,
-        metavar="FILE",
-        help="ไฟล์ output เช่น ./data.json",
-    )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> None:
     args = parse_args()
-
-    input_dir = Path(args.input_dir)
+    input_file = Path(args.input_file) if args.input_file else None
+    input_dir = Path(args.input_dir) if args.input_dir else None
     output_path = Path(args.output)
 
-    # ตรวจว่าโฟลเดอร์ input มีอยู่จริง
-    if not input_dir.is_dir():
-        print(f"[ผิดพลาด] ไม่พบโฟลเดอร์: {input_dir}")
+    try:
+        mode, paths = select_inputs(input_file=input_file, input_dir=input_dir)
+        print(f"โหมด input: {mode.upper()}")
+        print(f"ไฟล์ output: {output_path.resolve()}")
+
+        # Any selected-source error propagates before output is replaced.
+        records, stats = collect_records(mode, paths)
+        print_file_summary(stats)
+        print_duplicate_report(records)
+
+        if not records:
+            raise ExtractionError(
+                "ไม่มีรีวิวที่สกัดได้ — ไม่แทนที่ไฟล์ output เดิม"
+            )
+
+        atomic_write_json(output_path, [record.text for record in records])
+    except ExtractionError as exc:
+        print(f"[ผิดพลาด] {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"โฟลเดอร์ input : {input_dir.resolve()}")
-    print(f"ไฟล์ output    : {output_path.resolve()}")
-    print("-" * 60)
-
-    # รวบรวมรีวิวจากทุกไฟล์ (ตัดสินใจโหมดอัตโนมัติ)
-    all_reviews = collect_reviews(input_dir)
-
-    print("\n" + "-" * 60)
-    print(f"รวมทั้งหมด: {len(all_reviews):,} รีวิว")
-
-    # ถ้าไม่ได้ข้อความเลย → ไม่เขียนทับ output เดิม
-    if not all_reviews:
-        print("[ผิดพลาด] ไม่มีรีวิวที่สกัดได้ — ไม่บันทึกไฟล์ output")
-        sys.exit(1)
-
-    # บันทึก JSON array ด้วย UTF-8
-    # ensure_ascii=False: อีโมจิ ภาษาไทย ตัวล่องหน ออกมาตรง ๆ ไม่ถูก escape
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(all_reviews, f, ensure_ascii=False, indent=2)
-
-    print(f"บันทึกเรียบร้อย -> {output_path}")
+    print(f"\nบันทึกเรียบร้อย -> {output_path}")
 
 
 if __name__ == "__main__":
