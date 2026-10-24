@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 
-from analyze_tfidf import (
+from review_analysis.analyze_tfidf import (
     Feature,
     analyze_reviews,
     extract_features,

@@ -27,6 +27,11 @@ FIRST_REVIEW_ROW = 3
 KNOWN_HEADER = "ข้อความรีวิว (ไทย, anonymized)"
 COMBINED_XLSX_NAME = "รวมไฟล์.xlsx"
 
+PACKAGE_DIR = Path(__file__).resolve().parent
+REPOSITORY_ROOT = PACKAGE_DIR.parent
+DEFAULT_INPUT_DIR = REPOSITORY_ROOT / "data"
+DEFAULT_OUTPUT = PACKAGE_DIR / "outputs" / "data.json"
+
 
 class ExtractionError(Exception):
     """An input-selection or source-reading error that must abort the run."""
@@ -321,7 +326,7 @@ def select_inputs(
             raise ExtractionError("ไม่อ่านไฟล์ Excel ชั่วคราวที่ขึ้นต้นด้วย ~$")
         return suffix[1:], [input_file]
 
-    assert input_dir is not None  # argparse enforces one input option.
+    assert input_dir is not None  # main() supplies DEFAULT_INPUT_DIR when omitted.
     if not input_dir.is_dir():
         raise ExtractionError(f"ไม่พบโฟลเดอร์ input: {input_dir}")
     zip_files, xlsx_files = _supported_files(input_dir)
@@ -422,8 +427,10 @@ def print_duplicate_report(records: list[Review]) -> None:
 
 def atomic_write_json(output_path: Path, texts: list[str]) -> None:
     parent = output_path.parent
-    if not parent.is_dir():
-        raise ExtractionError(f"ไม่พบโฟลเดอร์ปลายทาง: {parent}")
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ExtractionError(f"สร้างโฟลเดอร์ปลายทางไม่ได้: {parent}: {exc}") from exc
 
     temp_name: str | None = None
     try:
@@ -454,24 +461,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="สกัด reviews!G3:G... เป็น JSON array โดยไม่แก้ข้อความต้นฉบับ"
     )
-    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs = parser.add_mutually_exclusive_group()
     inputs.add_argument(
-        "--input-file", metavar="FILE", help="ไฟล์ .zip หรือ .xlsx หนึ่งไฟล์"
+        "--input-file",
+        type=Path,
+        metavar="FILE",
+        help="ไฟล์ .zip หรือ .xlsx หนึ่งไฟล์",
     )
     inputs.add_argument(
-        "--input-dir", metavar="DIR", help="โฟลเดอร์ที่มี ZIP หรือ XLSX ชนิดเดียว"
+        "--input-dir",
+        type=Path,
+        metavar="DIR",
+        help=f"โฟลเดอร์ที่มี ZIP หรือ XLSX ชนิดเดียว (default: {DEFAULT_INPUT_DIR})",
     )
     parser.add_argument(
-        "--output", required=True, metavar="FILE", help="ไฟล์ JSON ปลายทาง"
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT,
+        metavar="FILE",
+        help=f"ไฟล์ JSON ปลายทาง (default: {DEFAULT_OUTPUT})",
     )
     return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
-    input_file = Path(args.input_file) if args.input_file else None
-    input_dir = Path(args.input_dir) if args.input_dir else None
-    output_path = Path(args.output)
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    input_file = args.input_file
+    input_dir = args.input_dir if args.input_dir is not None else DEFAULT_INPUT_DIR
+    output_path = args.output
 
     try:
         mode, paths = select_inputs(input_file=input_file, input_dir=input_dir)

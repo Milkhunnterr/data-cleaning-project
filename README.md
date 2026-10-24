@@ -82,3 +82,7 @@ git push -u origin feature/html
 เปลี่ยนชื่อ branch และข้อความ commit ให้ตรงกับงาน หากมีไฟล์อื่นที่เกี่ยวข้อง ให้ `git add` เพิ่มด้วย
 
 ครั้งถัดไปใน branch เดิมใช้ `git push` ได้เลย แล้วเปิด Pull Request เข้า `main` ให้ผู้รวมงานตรวจ **ไม่ push ตรงเข้า main**
+
+## งานวิเคราะห์รีวิว
+
+ขั้นตอนสกัดข้อความ Clean ข้อมูลจริง และ TF-IDF อยู่ใน [review_analysis/README_TFIDF.md](review_analysis/README_TFIDF.md)

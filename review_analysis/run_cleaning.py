@@ -6,9 +6,12 @@ run_cleaning.py
 อ้างอิงฟังก์ชัน Detect / Clean จาก main.py ทั้งหมด — ไม่คัดลอกกฎใหม่
 
 วิธีใช้:
-    python run_cleaning.py
+    python -m review_analysis.run_cleaning \
+        --input ./review_analysis/outputs/data.json \
+        --output ./review_analysis/outputs/cleaned_data.json
 """
 
+import argparse
 import json
 import sys
 from collections import defaultdict
@@ -37,9 +40,10 @@ from main import (
 # กำหนด path
 # ─────────────────────────────────────────────────────────────────────────────
 
-BASE_DIR = Path(__file__).resolve().parent
-INPUT_PATH = BASE_DIR / "data.json"
-OUTPUT_PATH = BASE_DIR / "cleaned_data.json"
+PACKAGE_DIR = Path(__file__).resolve().parent
+OUTPUTS_DIR = PACKAGE_DIR / "outputs"
+DEFAULT_INPUT_PATH = OUTPUTS_DIR / "data.json"
+DEFAULT_OUTPUT_PATH = OUTPUTS_DIR / "cleaned_data.json"
 
 # ลำดับ Clean ตรงกับ cleaning_steps ใน main.py ทุกประการ
 CLEAN_STEPS = [
@@ -211,18 +215,41 @@ def print_clean_summary(hit_counter: dict, entered_clean: int) -> None:
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Clean รีวิวด้วยฟังก์ชันเดิมจาก main.py"
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=DEFAULT_INPUT_PATH,
+        help=f"ไฟล์ JSON input (default: {DEFAULT_INPUT_PATH})",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT_PATH,
+        help=f"ไฟล์ JSON output (default: {DEFAULT_OUTPUT_PATH})",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    input_path = args.input
+    output_path = args.output
+
     # ตรวจว่าไฟล์ input มีอยู่จริง
-    if not INPUT_PATH.is_file():
-        print(f"[ผิดพลาด] ไม่พบไฟล์ input: {INPUT_PATH}")
+    if not input_path.is_file():
+        print(f"[ผิดพลาด] ไม่พบไฟล์ input: {input_path}")
         sys.exit(1)
 
-    print(f"Input  : {INPUT_PATH}")
-    print(f"Output : {OUTPUT_PATH}")
+    print(f"Input  : {input_path}")
+    print(f"Output : {output_path}")
     print("-" * 60)
 
     # โหลดและตรวจรูปแบบ Input (หยุดทันทีหากรูปแบบผิด)
-    raw_texts = load_input(INPUT_PATH)
+    raw_texts = load_input(input_path)
     total = len(raw_texts)
     print(f"Input ทั้งหมด: {total:,} รายการ")
     print("-" * 60)
@@ -253,10 +280,11 @@ def main() -> None:
     print_clean_summary(hit_counter, entered_clean)
 
     # บันทึก Output เป็น JSON array ของ string — ไม่มี id, flags, metadata
-    with OUTPUT_PATH.open("w", encoding="utf-8") as f:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
         json.dump(kept, f, ensure_ascii=False, indent=2)
 
-    print(f"\nบันทึกเรียบร้อย -> {OUTPUT_PATH}")
+    print(f"\nบันทึกเรียบร้อย -> {output_path}")
 
 
 if __name__ == "__main__":

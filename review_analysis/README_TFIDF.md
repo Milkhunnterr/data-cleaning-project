@@ -1,21 +1,44 @@
-# การเสนอคำ/วลีสำหรับตรวจ Aspect ด้วย TF-IDF
+# การสกัด Clean และเสนอคำ/วลีด้วย TF-IDF
 
-สคริปต์ `analyze_tfidf.py` อ่าน `cleaned_data.json` โดยถือว่า 1 รีวิวเป็น
-1 document แล้วเสนอ unigram และ bigram เพื่อให้มนุษย์ตรวจบริบทและจัดกลุ่ม
-Aspect เอง สคริปต์ไม่แก้ Input, ไม่ Clean ซ้ำ, ไม่จัดกลุ่มอัตโนมัติ และไม่ทำ
-sentiment classification
+งานวิเคราะห์อยู่ใน package `review_analysis` ภายใน repository เดิม และแบ่งเป็น
+3 ขั้น: สกัดข้อความจาก ZIP/XLSX, Clean ด้วยฟังก์ชันเดิมจาก `main.py` ที่ root,
+และเสนอ unigram/bigram ด้วย TF-IDF เพื่อให้มนุษย์ตรวจบริบทและจัดกลุ่ม Aspect เอง
+ไม่มีการจัดกลุ่มอัตโนมัติหรือ sentiment classification
 
-ติดตั้ง dependency สำหรับส่วนนี้ด้วย:
+## ติดตั้ง dependency
 
-```bash
-python -m pip install -r requirements-tfidf.txt
-```
-
-## วิธีรัน
+รันจาก root ของ repository:
 
 ```bash
-python analyze_tfidf.py
+python -m pip install -r review_analysis/requirements-tfidf.txt
 ```
+
+## โครงสร้างและคำสั่งรัน
+
+```text
+data/                              # ZIP / Excel ต้นฉบับ
+main.py                            # ฟังก์ชัน Detect / Clean เดิม
+review_analysis/
+├── extract_text.py
+├── run_cleaning.py
+├── analyze_tfidf.py
+├── tfidf_stopwords.txt
+├── requirements-tfidf.txt
+└── outputs/                       # ผลลัพธ์ที่สร้าง ไม่ติดตามด้วย Git
+```
+
+ไฟล์ต้นฉบับอยู่ใน `data/` และผลลัพธ์ทั้งหมดอยู่ใน
+`review_analysis/outputs/` ซึ่งสคริปต์จะสร้างให้อัตโนมัติเมื่อจำเป็น
+
+```bash
+python -m review_analysis.extract_text --input-dir ./data --output ./review_analysis/outputs/data.json
+python -m review_analysis.run_cleaning --input ./review_analysis/outputs/data.json --output ./review_analysis/outputs/cleaned_data.json
+python -m review_analysis.analyze_tfidf --input ./review_analysis/outputs/cleaned_data.json --output ./review_analysis/outputs/tfidf_aspect_candidates.csv
+```
+
+path ที่ผู้ใช้ระบุแบบ relative จะอ้างจาก working directory จึงควรรันคำสั่งข้างต้น
+จาก root ของ repository ส่วนค่า default ของแต่ละสคริปต์อ้างจากตำแหน่ง package
+ด้วย `pathlib`
 
 ค่าเริ่มต้นคือ `min_df=2`, แสดง 50 อันดับแรกใน Terminal และเรียงตามจำนวน
 รีวิวที่พบจากมากไปน้อย หากเท่ากันจึงเรียงด้วยคะแนน TF-IDF รวม ผลลัพธ์ทุก
@@ -32,17 +55,17 @@ feature ที่ผ่าน `min_df` จะถูกสร้างจาก�
 ตัวอย่างการปรับค่า:
 
 ```bash
-python analyze_tfidf.py --min-df 3 --top-n 100
-python analyze_tfidf.py --sort-by tfidf
-python analyze_tfidf.py --input cleaned_data.json --output candidates.csv
+python -m review_analysis.analyze_tfidf --min-df 3 --top-n 100
+python -m review_analysis.analyze_tfidf --sort-by tfidf
+python -m review_analysis.analyze_tfidf --input ./review_analysis/outputs/cleaned_data.json --output ./review_analysis/outputs/candidates.csv
 ```
 
-เมื่อกำหนด `--output candidates.csv` โปรแกรมจะสร้าง `candidates.csv` และ
-`candidates.xlsx` ในตำแหน่งเดียวกัน
+เมื่อกำหนด `--output ./review_analysis/outputs/candidates.csv` โปรแกรมจะสร้าง
+`candidates.csv` และ `candidates.xlsx` ในตำแหน่งเดียวกัน
 
-ดูตัวเลือกทั้งหมดด้วย `python analyze_tfidf.py --help` รายการ stopwords อยู่ใน
-`tfidf_stopwords.txt` และแก้ไขได้ทีละบรรทัด โปรแกรมจะแสดง stopwords ที่พบและ
-คัดออกจริงพร้อมจำนวนครั้งใน Terminal
+ดูตัวเลือกทั้งหมดด้วย `python -m review_analysis.analyze_tfidf --help`
+รายการ stopwords อยู่ใน `review_analysis/tfidf_stopwords.txt` และแก้ไขได้
+ทีละบรรทัด โปรแกรมจะแสดง stopwords ที่พบและคัดออกจริงพร้อมจำนวนครั้งใน Terminal
 
 ## การเตรียม token และ bigram
 

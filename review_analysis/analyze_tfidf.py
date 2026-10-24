@@ -25,7 +25,7 @@ try:
 except ImportError as exc:  # pragma: no cover - depends on local environment
     raise SystemExit(
         "ไม่พบ openpyxl: ติดตั้งด้วยคำสั่ง "
-        "python -m pip install -r requirements-tfidf.txt"
+        "python -m pip install -r review_analysis/requirements-tfidf.txt"
     ) from exc
 
 try:
@@ -37,8 +37,9 @@ except ImportError as exc:  # pragma: no cover - depends on local environment
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_INPUT = BASE_DIR / "cleaned_data.json"
-DEFAULT_OUTPUT = BASE_DIR / "tfidf_aspect_candidates.csv"
+OUTPUTS_DIR = BASE_DIR / "outputs"
+DEFAULT_INPUT = OUTPUTS_DIR / "cleaned_data.json"
+DEFAULT_OUTPUT = OUTPUTS_DIR / "tfidf_aspect_candidates.csv"
 DEFAULT_STOPWORDS = BASE_DIR / "tfidf_stopwords.txt"
 
 EXCEL_SHEETS = (("Unigram", "unigram"), ("Bigram", "bigram"))
@@ -94,13 +95,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--input",
         type=Path,
         default=DEFAULT_INPUT,
-        help="ไฟล์ JSON array of strings (default: cleaned_data.json)",
+        help=f"ไฟล์ JSON array of strings (default: {DEFAULT_INPUT})",
     )
     parser.add_argument(
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
-        help="พาธ CSV ผลลัพธ์; Excel ใช้ชื่อเดียวกันนามสกุล .xlsx",
+        help=f"พาธ CSV (default: {DEFAULT_OUTPUT}); Excel ใช้ชื่อเดียวกันนามสกุล .xlsx",
     )
     parser.add_argument(
         "--stopwords",
