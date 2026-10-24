@@ -1,0 +1,471 @@
+"""Explore candidate aspect terms in cleaned Thai reviews with TF-IDF.
+
+This script proposes unigram and bigram candidates for human review. It does
+not infer aspects, cluster terms, classify sentiment, or modify the input.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import re
+import sys
+import unicodedata
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Sequence
+
+try:
+    from pythainlp.tokenize import word_tokenize
+except ImportError as exc:  # pragma: no cover - depends on local environment
+    raise SystemExit(
+        "ไม่พบ PyThaiNLP: ติดตั้งด้วยคำสั่ง python -m pip install pythainlp"
+    ) from exc
+
+
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_INPUT = BASE_DIR / "cleaned_data.json"
+DEFAULT_OUTPUT = BASE_DIR / "tfidf_aspect_candidates.csv"
+DEFAULT_STOPWORDS = BASE_DIR / "tfidf_stopwords.txt"
+
+CSV_COLUMNS = [
+    "อันดับ",
+    "คำ/วลี",
+    "ประเภท",
+    "จำนวนครั้งที่พบ",
+    "จำนวนรีวิวที่พบ",
+    "คะแนน TF-IDF รวม",
+    "รีวิวตัวอย่าง 3 รายการ",
+    "แง่มุมที่ผู้ตรวจจัดกลุ่ม",
+    "หมายเหตุผู้ตรวจ",
+]
+
+PLACEHOLDER_RE = re.compile(r"\[\s*(?:URL|PHONE)\s*\]", re.IGNORECASE)
+PURE_NUMBER_RE = re.compile(r"^[0-9๐-๙]+(?:[.,][0-9๐-๙]+)*$")
+FILTERED_THAI_MARKS = {"ๆ", "ฯ", "ฯลฯ"}
+
+
+@dataclass(frozen=True)
+class Feature:
+    """A feature type and its token tuple."""
+
+    kind: str
+    tokens: tuple[str, ...]
+
+    @property
+    def text(self) -> str:
+        return " ".join(self.tokens)
+
+
+@dataclass
+class AnalysisResult:
+    rows: list[dict[str, object]]
+    tokenized_documents: list[list[str]]
+    filtered_stopwords: Counter[str]
+    duplicate_groups: list[tuple[str, list[int]]]
+    unigram_count: int
+    bigram_count: int
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "เสนอคำ/วลี unigram และ bigram ด้วย TF-IDF เพื่อให้มนุษย์ตรวจและจัดกลุ่ม Aspect"
+        )
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=DEFAULT_INPUT,
+        help="ไฟล์ JSON array of strings (default: cleaned_data.json)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT,
+        help="CSV ผลลัพธ์ UTF-8 BOM เพียงไฟล์เดียว",
+    )
+    parser.add_argument(
+        "--stopwords",
+        type=Path,
+        default=DEFAULT_STOPWORDS,
+        help="ไฟล์ stopwords แก้ไขได้ หนึ่งคำต่อบรรทัด",
+    )
+    parser.add_argument(
+        "--min-df",
+        type=positive_int,
+        default=2,
+        help="จำนวนรีวิวขั้นต่ำที่ต้องพบ feature (default: 2)",
+    )
+    parser.add_argument(
+        "--top-n",
+        type=positive_int,
+        default=50,
+        help="จำนวนอันดับที่แสดงใน Terminal เท่านั้น (default: 50)",
+    )
+    parser.add_argument(
+        "--sort-by",
+        choices=("document_frequency", "tfidf"),
+        default="document_frequency",
+        help=(
+            "เรียงตามจำนวนรีวิวที่พบ หรือคะแนน TF-IDF รวม "
+            "(default: document_frequency)"
+        ),
+    )
+    parser.add_argument(
+        "--token-examples",
+        type=nonnegative_int,
+        default=3,
+        help="จำนวนตัวอย่างการตัดคำจากข้อมูลจริง (default: 3)",
+    )
+    return parser.parse_args(argv)
+
+
+def positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("ค่าต้องไม่น้อยกว่า 1")
+    return number
+
+
+def nonnegative_int(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("ค่าต้องไม่น้อยกว่า 0")
+    return number
+
+
+def load_reviews(path: Path) -> list[str]:
+    try:
+        with path.open("r", encoding="utf-8-sig") as file:
+            data = json.load(file)
+    except FileNotFoundError as exc:
+        raise ValueError(f"ไม่พบไฟล์ Input: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Input ไม่ใช่ JSON ที่ถูกต้อง: {exc}") from exc
+
+    if not isinstance(data, list) or not all(isinstance(item, str) for item in data):
+        raise ValueError("Input ต้องเป็น JSON array ที่ทุกรายการเป็น string")
+    if not data:
+        raise ValueError("Input ไม่มีรีวิว")
+    return data
+
+
+def load_stopwords(path: Path) -> set[str]:
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except FileNotFoundError as exc:
+        raise ValueError(f"ไม่พบไฟล์ stopwords: {path}") from exc
+
+    return {
+        line.strip()
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+
+def find_duplicate_groups(reviews: Sequence[str]) -> list[tuple[str, list[int]]]:
+    """Return exact duplicate texts and their 1-based input positions."""
+    positions: dict[str, list[int]] = defaultdict(list)
+    for input_number, review in enumerate(reviews, start=1):
+        positions[review].append(input_number)
+    return [
+        (text, input_numbers)
+        for text, input_numbers in positions.items()
+        if len(input_numbers) > 1
+    ]
+
+
+def is_symbol_or_punctuation(token: str) -> bool:
+    visible = [char for char in token if not char.isspace()]
+    return bool(visible) and all(
+        unicodedata.category(char).startswith(("P", "S")) for char in visible
+    )
+
+
+def classify_token(token: str, stopwords: set[str]) -> str:
+    """Classify a tokenizer token as usable, whitespace, or a hard boundary."""
+    if not token or token.isspace():
+        return "newline" if "\n" in token or "\r" in token else "space"
+    if PLACEHOLDER_RE.fullmatch(token.strip()):
+        return "placeholder"
+    if token in stopwords:
+        return "stopword"
+    if PURE_NUMBER_RE.fullmatch(token):
+        return "number"
+    if token in FILTERED_THAI_MARKS:
+        return "symbol"
+    if is_symbol_or_punctuation(token):
+        return "symbol"
+    return "usable"
+
+
+def tokenize_review(review: str) -> list[str]:
+    """Tokenize with newmm while preserving whitespace and placeholders."""
+    tokens: list[str] = []
+    cursor = 0
+    for match in PLACEHOLDER_RE.finditer(review):
+        if match.start() > cursor:
+            tokens.extend(
+                word_tokenize(
+                    review[cursor : match.start()],
+                    engine="newmm",
+                    keep_whitespace=True,
+                )
+            )
+        tokens.append(match.group())
+        cursor = match.end()
+    if cursor < len(review):
+        tokens.extend(
+            word_tokenize(review[cursor:], engine="newmm", keep_whitespace=True)
+        )
+    return tokens
+
+
+def extract_features(
+    tokens: Sequence[str], stopwords: set[str]
+) -> tuple[Counter[Feature], Counter[str]]:
+    """Extract features without joining across filtered tokens or boundaries.
+
+    Ordinary spaces are transparent so ``วิว สวย`` can form a bigram. Every
+    filtered non-space token and every newline resets bigram adjacency.
+    """
+    counts: Counter[Feature] = Counter()
+    removed_stopwords: Counter[str] = Counter()
+    previous_usable: str | None = None
+
+    for token in tokens:
+        token_class = classify_token(token, stopwords)
+        if token_class == "space":
+            continue
+        if token_class != "usable":
+            if token_class == "stopword":
+                removed_stopwords[token] += 1
+            previous_usable = None
+            continue
+
+        counts[Feature("unigram", (token,))] += 1
+        if previous_usable is not None:
+            counts[Feature("bigram", (previous_usable, token))] += 1
+        previous_usable = token
+
+    return counts, removed_stopwords
+
+
+def choose_examples(
+    feature: Feature,
+    document_counts: Sequence[Counter[Feature]],
+    reviews: Sequence[str],
+    limit: int = 3,
+) -> list[tuple[int, str]]:
+    """Choose distinct original reviews that contain the computed feature."""
+    examples: list[tuple[int, str]] = []
+    seen_texts: set[str] = set()
+    for input_number, (counts, original) in enumerate(
+        zip(document_counts, reviews), start=1
+    ):
+        if counts[feature] and original not in seen_texts:
+            examples.append((input_number, original))
+            seen_texts.add(original)
+            if len(examples) == limit:
+                break
+    return examples
+
+
+def analyze_reviews(
+    reviews: Sequence[str],
+    stopwords: set[str],
+    min_df: int = 2,
+    sort_by: str = "document_frequency",
+) -> AnalysisResult:
+    if min_df < 1:
+        raise ValueError("min_df ต้องไม่น้อยกว่า 1")
+    if sort_by not in {"document_frequency", "tfidf"}:
+        raise ValueError("sort_by ต้องเป็น document_frequency หรือ tfidf")
+
+    tokenized_documents: list[list[str]] = []
+    document_counts: list[Counter[Feature]] = []
+    filtered_stopwords: Counter[str] = Counter()
+    total_counts: Counter[Feature] = Counter()
+    document_frequencies: Counter[Feature] = Counter()
+
+    for review in reviews:
+        tokens = tokenize_review(review)
+        counts, removed = extract_features(tokens, stopwords)
+        tokenized_documents.append(tokens)
+        document_counts.append(counts)
+        filtered_stopwords.update(removed)
+        total_counts.update(counts)
+        document_frequencies.update(counts.keys())
+
+    document_total = len(reviews)
+    candidates: list[tuple[Feature, int, int, float]] = []
+    for feature, document_frequency in document_frequencies.items():
+        if document_frequency < min_df:
+            continue
+        # smooth_idf=True, sublinear_tf=False, norm=None
+        idf = math.log((1 + document_total) / (1 + document_frequency)) + 1
+        tfidf_sum = total_counts[feature] * idf
+        candidates.append(
+            (feature, total_counts[feature], document_frequency, tfidf_sum)
+        )
+
+    if sort_by == "document_frequency":
+        candidates.sort(
+            key=lambda item: (
+                -item[2],
+                -item[3],
+                -item[1],
+                item[0].kind,
+                item[0].text,
+            )
+        )
+    else:
+        candidates.sort(
+            key=lambda item: (
+                -item[3],
+                -item[2],
+                -item[1],
+                item[0].kind,
+                item[0].text,
+            )
+        )
+
+    rows: list[dict[str, object]] = []
+    for rank, (feature, total_count, document_frequency, tfidf_sum) in enumerate(
+        candidates, start=1
+    ):
+        examples = choose_examples(feature, document_counts, reviews)
+        example_text = " || ".join(
+            f"[Input {input_number}] {review}"
+            for input_number, review in examples
+        )
+        rows.append(
+            {
+                "อันดับ": rank,
+                "คำ/วลี": feature.text,
+                "ประเภท": feature.kind,
+                "จำนวนครั้งที่พบ": total_count,
+                "จำนวนรีวิวที่พบ": document_frequency,
+                "คะแนน TF-IDF รวม": f"{tfidf_sum:.6f}",
+                "รีวิวตัวอย่าง 3 รายการ": example_text,
+                "แง่มุมที่ผู้ตรวจจัดกลุ่ม": "",
+                "หมายเหตุผู้ตรวจ": "",
+            }
+        )
+
+    return AnalysisResult(
+        rows=rows,
+        tokenized_documents=tokenized_documents,
+        filtered_stopwords=filtered_stopwords,
+        duplicate_groups=find_duplicate_groups(reviews),
+        unigram_count=sum(1 for item in candidates if item[0].kind == "unigram"),
+        bigram_count=sum(1 for item in candidates if item[0].kind == "bigram"),
+    )
+
+
+def write_csv(path: Path, rows: Iterable[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def compact_text(text: str, limit: int = 90) -> str:
+    one_line = " ".join(text.split())
+    return one_line if len(one_line) <= limit else one_line[: limit - 1] + "…"
+
+
+def print_duplicate_report(
+    review_count: int, duplicate_groups: Sequence[tuple[str, list[int]]]
+) -> None:
+    duplicate_entries = sum(len(indexes) - 1 for _, indexes in duplicate_groups)
+    print("\n=== ตรวจข้อความซ้ำก่อนวิเคราะห์ (เทียบข้อความตรงกันทุกตัวอักษร) ===")
+    print(f"รีวิวทั้งหมด: {review_count:,}")
+    print(f"ข้อความไม่ซ้ำ: {review_count - duplicate_entries:,}")
+    print(f"รายการซ้ำส่วนเกิน: {duplicate_entries:,}")
+    print(f"กลุ่มข้อความซ้ำ: {len(duplicate_groups):,}")
+    if duplicate_groups:
+        print("ตำแหน่ง Input ของทุกกลุ่มที่ซ้ำ (เริ่มนับจาก 1):")
+        for text, positions in duplicate_groups:
+            joined = ", ".join(map(str, positions))
+            print(f"  Input {joined}: {compact_text(text)}")
+    print("ไม่มีการลบหรือเปลี่ยนรายการซ้ำในการคำนวณ")
+
+
+def print_token_examples(
+    reviews: Sequence[str], tokenized_documents: Sequence[Sequence[str]], count: int
+) -> None:
+    print("\n=== ตัวอย่างการตัดคำจากข้อมูลจริง: PyThaiNLP engine=newmm ===")
+    if count == 0:
+        print("ปิดการแสดงตัวอย่าง (--token-examples 0)")
+        return
+    for index, (review, tokens) in enumerate(
+        zip(reviews, tokenized_documents), start=1
+    ):
+        if index > count:
+            break
+        print(f"[Input {index}] {review}")
+        print(f"Tokens: {tokens}")
+
+
+def print_stopword_report(removed: Counter[str]) -> None:
+    print("\n=== Stopwords ที่พบและคัดออกจากสำเนาสำหรับวิเคราะห์ ===")
+    if not removed:
+        print("ไม่พบ stopword จากรายการที่กำหนด")
+        return
+    print(", ".join(f"{word} ({count:,})" for word, count in sorted(removed.items())))
+
+
+def print_top_rows(rows: Sequence[dict[str, object]], top_n: int) -> None:
+    print(f"\n=== ผลอันดับต้น {min(top_n, len(rows)):,} รายการ ===")
+    headers = ("อันดับ", "คำ/วลี", "ประเภท", "จำนวนครั้งที่พบ", "จำนวนรีวิวที่พบ", "คะแนน TF-IDF รวม")
+    print("\t".join(headers))
+    for row in rows[:top_n]:
+        print("\t".join(str(row[header]) for header in headers))
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        if args.output.resolve() in {args.input.resolve(), args.stopwords.resolve()}:
+            raise ValueError("ไฟล์ Output ต้องไม่ทับไฟล์ Input หรือไฟล์ stopwords")
+        reviews = load_reviews(args.input)
+        stopwords = load_stopwords(args.stopwords)
+        result = analyze_reviews(
+            reviews,
+            stopwords,
+            min_df=args.min_df,
+            sort_by=args.sort_by,
+        )
+        print_duplicate_report(len(reviews), result.duplicate_groups)
+        print_token_examples(reviews, result.tokenized_documents, args.token_examples)
+        print_stopword_report(result.filtered_stopwords)
+        print("\n=== พารามิเตอร์ ===")
+        print("หน่วยเอกสาร: 1 รีวิว")
+        print("TF: จำนวนครั้งดิบ (sublinear_tf=False)")
+        print("IDF: log((1 + N) / (1 + df)) + 1 (smooth_idf=True)")
+        print("norm=None: ไม่ปรับตามความยาว รีวิวที่ยาวหรือกล่าวคำซ้ำอาจมีอิทธิพลมากขึ้น")
+        print(f"min_df={args.min_df}, sort_by={args.sort_by}, top_n={args.top_n}")
+        print_top_rows(result.rows, args.top_n)
+        write_csv(args.output, result.rows)
+    except (OSError, ValueError) as exc:
+        print(f"ข้อผิดพลาด: {exc}", file=sys.stderr)
+        return 1
+
+    print("\n=== ส่งออก ===")
+    print(
+        f"CSV ทุก feature ที่ผ่าน min_df: {len(result.rows):,} รายการ "
+        f"(unigram {result.unigram_count:,}, bigram {result.bigram_count:,})"
+    )
+    print(f"ไฟล์: {args.output.resolve()}")
+    print("Encoding: UTF-8 BOM; ช่อง Aspect และหมายเหตุเว้นว่างให้ผู้ตรวจกรอก")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
