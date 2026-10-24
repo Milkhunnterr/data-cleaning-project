@@ -19,6 +19,16 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+except ImportError as exc:  # pragma: no cover - depends on local environment
+    raise SystemExit(
+        "ไม่พบ openpyxl: ติดตั้งด้วยคำสั่ง "
+        "python -m pip install -r requirements-tfidf.txt"
+    ) from exc
+
+try:
     from pythainlp.tokenize import word_tokenize
 except ImportError as exc:  # pragma: no cover - depends on local environment
     raise SystemExit(
@@ -30,6 +40,10 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_INPUT = BASE_DIR / "cleaned_data.json"
 DEFAULT_OUTPUT = BASE_DIR / "tfidf_aspect_candidates.csv"
 DEFAULT_STOPWORDS = BASE_DIR / "tfidf_stopwords.txt"
+
+EXCEL_SHEETS = (("Unigram", "unigram"), ("Bigram", "bigram"))
+EXCEL_COLUMN_WIDTHS = (9, 25, 12, 17, 18, 20, 88, 28, 32)
+EXCEL_FONT_NAME = "Tahoma"
 
 CSV_COLUMNS = [
     "อันดับ",
@@ -86,7 +100,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
-        help="CSV ผลลัพธ์ UTF-8 BOM เพียงไฟล์เดียว",
+        help="พาธ CSV ผลลัพธ์; Excel ใช้ชื่อเดียวกันนามสกุล .xlsx",
     )
     parser.add_argument(
         "--stopwords",
@@ -375,6 +389,100 @@ def write_csv(path: Path, rows: Iterable[dict[str, object]]) -> None:
         writer.writerows(rows)
 
 
+def excel_path_for(csv_path: Path) -> Path:
+    """Return the Excel path paired with a CSV output path."""
+    return csv_path.with_suffix(".xlsx")
+
+
+def _estimated_excel_row_height(values: Sequence[object]) -> float:
+    """Estimate a readable wrapped row height without changing cell text."""
+    line_count = 1
+    for value, width in zip(values, EXCEL_COLUMN_WIDTHS):
+        text = "" if value is None else str(value)
+        visual_width = max(1, int(width - 2))
+        wrapped_lines = sum(
+            max(1, math.ceil(len(part) / visual_width))
+            for part in text.splitlines() or [""]
+        )
+        line_count = max(line_count, wrapped_lines)
+    # Excel limits row height to 409.5 points. Cell contents remain complete.
+    return min(409.5, max(20.0, line_count * 15.0))
+
+
+def _style_excel_sheet(sheet) -> None:
+    header_fill = PatternFill("solid", fgColor="FF234A78")
+    white_fill = PatternFill("solid", fgColor="FFFFFFFF")
+    reviewer_fill = PatternFill("solid", fgColor="FFFFF3D4")
+    thin_gray = Side(style="thin", color="FFB7B7B7")
+    border = Border(left=thin_gray, right=thin_gray, top=thin_gray, bottom=thin_gray)
+    base_font = Font(name=EXCEL_FONT_NAME, size=11)
+    header_font = Font(
+        name=EXCEL_FONT_NAME, size=11, bold=True, color="FFFFFFFF"
+    )
+
+    for column_number, width in enumerate(EXCEL_COLUMN_WIDTHS, start=1):
+        sheet.column_dimensions[get_column_letter(column_number)].width = width
+
+    sheet.row_dimensions[1].height = 26
+    for cell in sheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(
+            horizontal="center", vertical="center", wrap_text=True
+        )
+        cell.border = border
+
+    for row_number in range(2, sheet.max_row + 1):
+        values = [sheet.cell(row_number, column).value for column in range(1, 10)]
+        sheet.row_dimensions[row_number].height = _estimated_excel_row_height(values)
+        for column_number in range(1, 10):
+            cell = sheet.cell(row_number, column_number)
+            cell.font = base_font
+            cell.border = border
+            cell.fill = reviewer_fill if column_number in (8, 9) else white_fill
+            if column_number == 7:
+                cell.alignment = Alignment(
+                    horizontal="left", vertical="top", wrap_text=True
+                )
+            else:
+                cell.alignment = Alignment(
+                    horizontal="center", vertical="center", wrap_text=True
+                )
+
+        for column_number in (1, 4, 5):
+            sheet.cell(row_number, column_number).number_format = "0"
+        sheet.cell(row_number, 6).number_format = "0.000000"
+
+    sheet.freeze_panes = "C2"
+    sheet.auto_filter.ref = f"A1:I{sheet.max_row}"
+
+
+def write_excel(path: Path, rows: Sequence[dict[str, object]]) -> None:
+    """Write the ranked result rows to separate unigram and bigram sheets."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    default_sheet = workbook.active
+
+    for sheet_index, (sheet_name, feature_type) in enumerate(EXCEL_SHEETS):
+        sheet = default_sheet if sheet_index == 0 else workbook.create_sheet()
+        sheet.title = sheet_name
+        sheet.append(CSV_COLUMNS)
+
+        for row in rows:
+            if row["ประเภท"] != feature_type:
+                continue
+            values = [row[column] for column in CSV_COLUMNS]
+            values[0] = int(values[0])
+            values[3] = int(values[3])
+            values[4] = int(values[4])
+            values[5] = float(values[5])
+            sheet.append(values)
+
+        _style_excel_sheet(sheet)
+
+    workbook.save(path)
+
+
 def compact_text(text: str, limit: int = 90) -> str:
     one_line = " ".join(text.split())
     return one_line if len(one_line) <= limit else one_line[: limit - 1] + "…"
@@ -432,7 +540,14 @@ def print_top_rows(rows: Sequence[dict[str, object]], top_n: int) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        if args.output.resolve() in {args.input.resolve(), args.stopwords.resolve()}:
+        excel_output = excel_path_for(args.output)
+        if excel_output.resolve() == args.output.resolve():
+            raise ValueError("--output ต้องเป็นพาธ CSV ไม่ใช่ไฟล์ .xlsx")
+        protected_paths = {args.input.resolve(), args.stopwords.resolve()}
+        if (
+            args.output.resolve() in protected_paths
+            or excel_output.resolve() in protected_paths
+        ):
             raise ValueError("ไฟล์ Output ต้องไม่ทับไฟล์ Input หรือไฟล์ stopwords")
         reviews = load_reviews(args.input)
         stopwords = load_stopwords(args.stopwords)
@@ -453,17 +568,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"min_df={args.min_df}, sort_by={args.sort_by}, top_n={args.top_n}")
         print_top_rows(result.rows, args.top_n)
         write_csv(args.output, result.rows)
+        write_excel(excel_output, result.rows)
     except (OSError, ValueError) as exc:
         print(f"ข้อผิดพลาด: {exc}", file=sys.stderr)
         return 1
 
     print("\n=== ส่งออก ===")
     print(
-        f"CSV ทุก feature ที่ผ่าน min_df: {len(result.rows):,} รายการ "
+        f"CSV และ Excel ทุก feature ที่ผ่าน min_df: {len(result.rows):,} รายการ "
         f"(unigram {result.unigram_count:,}, bigram {result.bigram_count:,})"
     )
-    print(f"ไฟล์: {args.output.resolve()}")
-    print("Encoding: UTF-8 BOM; ช่อง Aspect และหมายเหตุเว้นว่างให้ผู้ตรวจกรอก")
+    print(f"CSV: {args.output.resolve()}")
+    print(f"Excel: {excel_output.resolve()}")
+    print("CSV encoding: UTF-8 BOM; ช่อง Aspect และหมายเหตุเว้นว่างให้ผู้ตรวจกรอก")
     return 0
 
 

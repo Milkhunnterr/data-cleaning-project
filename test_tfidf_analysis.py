@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 
 import pytest
+from openpyxl import load_workbook
 
 from analyze_tfidf import (
     Feature,
@@ -10,6 +11,7 @@ from analyze_tfidf import (
     extract_features,
     tokenize_review,
     write_csv,
+    write_excel,
 )
 
 
@@ -94,6 +96,54 @@ def test_csv_has_bom_and_all_rows(tmp_path: Path):
     with output.open(encoding="utf-8-sig", newline="") as file:
         exported = list(csv.DictReader(file))
     assert len(exported) == len(result.rows)
+
+
+def test_excel_matches_csv_and_uses_required_sheet_layout(tmp_path: Path):
+    result = analyze_reviews(
+        ["วิว สวย", "ทะเล สวย", "วิวดี"], set(), min_df=1
+    )
+    csv_output = tmp_path / "result.csv"
+    excel_output = tmp_path / "result.xlsx"
+    write_csv(csv_output, result.rows)
+    write_excel(excel_output, result.rows)
+
+    with csv_output.open(encoding="utf-8-sig", newline="") as file:
+        csv_rows = list(csv.DictReader(file))
+    workbook = load_workbook(excel_output, data_only=True)
+
+    assert workbook.sheetnames == ["Unigram", "Bigram"]
+    excel_row_count = sum(sheet.max_row - 1 for sheet in workbook.worksheets)
+    assert excel_row_count == len(csv_rows)
+
+    for sheet_name, expected_type in (
+        ("Unigram", "unigram"),
+        ("Bigram", "bigram"),
+    ):
+        sheet = workbook[sheet_name]
+        assert sheet.freeze_panes == "C2"
+        assert sheet.auto_filter.ref == f"A1:I{sheet.max_row}"
+        assert sheet["A1"].fill.fgColor.rgb == "FF234A78"
+        assert sheet["H2"].fill.fgColor.rgb == "FFFFF3D4"
+        assert sheet["I2"].fill.fgColor.rgb == "FFFFF3D4"
+
+        expected_rows = [
+            row for row in csv_rows if row["ประเภท"] == expected_type
+        ]
+        actual_rows = list(sheet.iter_rows(min_row=2, values_only=True))
+        assert len(actual_rows) == len(expected_rows)
+
+        for actual, expected in zip(actual_rows, expected_rows):
+            assert actual[0] == int(expected["อันดับ"])
+            assert actual[1] == expected["คำ/วลี"]
+            assert actual[2] == expected_type
+            assert actual[3] == int(expected["จำนวนครั้งที่พบ"])
+            assert actual[4] == int(expected["จำนวนรีวิวที่พบ"])
+            assert actual[5] == pytest.approx(
+                float(expected["คะแนน TF-IDF รวม"])
+            )
+            assert actual[6] == expected["รีวิวตัวอย่าง 3 รายการ"]
+            assert actual[7] is None
+            assert actual[8] is None
 
 
 def test_thai_repetition_mark_is_not_a_feature():

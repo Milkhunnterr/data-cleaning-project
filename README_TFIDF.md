@@ -5,6 +5,12 @@
 Aspect เอง สคริปต์ไม่แก้ Input, ไม่ Clean ซ้ำ, ไม่จัดกลุ่มอัตโนมัติ และไม่ทำ
 sentiment classification
 
+ติดตั้ง dependency สำหรับส่วนนี้ด้วย:
+
+```bash
+python -m pip install -r requirements-tfidf.txt
+```
+
 ## วิธีรัน
 
 ```bash
@@ -12,9 +18,16 @@ python analyze_tfidf.py
 ```
 
 ค่าเริ่มต้นคือ `min_df=2`, แสดง 50 อันดับแรกใน Terminal และเรียงตามจำนวน
-รีวิวที่พบจากมากไปน้อย หากเท่ากันจึงเรียงด้วยคะแนน TF-IDF รวม ส่วนไฟล์
-`tfidf_aspect_candidates.csv` จะมีทุก feature ที่ผ่าน `min_df` ไม่ได้จำกัดเพียง
-50 รายการ และใช้ UTF-8 BOM
+รีวิวที่พบจากมากไปน้อย หากเท่ากันจึงเรียงด้วยคะแนน TF-IDF รวม ผลลัพธ์ทุก
+feature ที่ผ่าน `min_df` จะถูกสร้างจากผลวิเคราะห์ชุดเดียวกันและไม่จำกัดเพียง
+50 รายการ:
+
+- `tfidf_aspect_candidates.csv` รวม unigram และ bigram ใช้ UTF-8 BOM
+- `tfidf_aspect_candidates.xlsx` แยกชีต `Unigram` และ `Bigram` แต่รักษาอันดับ
+  เดิมจากผลรวม
+
+ก่อนเริ่มกรอกคอลัมน์แง่มุมหรือหมายเหตุใน Excel ควร **Save As เป็นชื่ออื่น**
+เพราะการรันสคริปต์ครั้งถัดไปจะเขียนทับไฟล์ผลลัพธ์ชื่อเดิม
 
 ตัวอย่างการปรับค่า:
 
@@ -23,6 +36,9 @@ python analyze_tfidf.py --min-df 3 --top-n 100
 python analyze_tfidf.py --sort-by tfidf
 python analyze_tfidf.py --input cleaned_data.json --output candidates.csv
 ```
+
+เมื่อกำหนด `--output candidates.csv` โปรแกรมจะสร้าง `candidates.csv` และ
+`candidates.xlsx` ในตำแหน่งเดียวกัน
 
 ดูตัวเลือกทั้งหมดด้วย `python analyze_tfidf.py --help` รายการ stopwords อยู่ใน
 `tfidf_stopwords.txt` และแก้ไขได้ทีละบรรทัด โปรแกรมจะแสดง stopwords ที่พบและ

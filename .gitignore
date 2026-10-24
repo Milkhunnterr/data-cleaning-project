@@ -1,2 +1,9 @@
 __pycache__/
 *.py[cod]
+
+# Generated outputs
+/checkoutput.json
+/data.json
+/cleaned_data.json
+/tfidf_aspect_candidates.csv
+/tfidf_aspect_candidates.xlsx
