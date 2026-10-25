@@ -1,9 +1,10 @@
 # การสกัด Clean และเสนอคำ/วลีด้วย TF-IDF
 
 งานวิเคราะห์อยู่ใน package `review_analysis` ภายใน repository เดิม และแบ่งเป็น
-3 ขั้น: สกัดข้อความจาก ZIP/XLSX, Clean ด้วยฟังก์ชันเดิมจาก `main.py` ที่ root,
-และเสนอ unigram/bigram ด้วย TF-IDF เพื่อให้มนุษย์ตรวจบริบทและจัดกลุ่ม Aspect เอง
-ไม่มีการจัดกลุ่มอัตโนมัติหรือ sentiment classification
+4 ขั้น: สกัดข้อความจาก ZIP/XLSX, Clean ด้วยฟังก์ชันเดิมจาก `main.py` ที่ root,
+เสนอ unigram/bigram ด้วย TF-IDF และจัดกลุ่มคำ/วลีตามความหมายเพื่อให้มนุษย์
+ตรวจและตั้งชื่อ Aspect ภายหลัง ไม่มี sentiment classification และโปรแกรมไม่ตั้งชื่อ
+Aspect อัตโนมัติ
 
 ## ติดตั้ง dependency
 
@@ -22,6 +23,7 @@ review_analysis/
 ├── extract_text.py
 ├── run_cleaning.py
 ├── analyze_tfidf.py
+├── cluster_terms.py
 ├── tfidf_stopwords.txt
 ├── requirements-tfidf.txt
 └── outputs/                       # ผลลัพธ์ที่สร้าง ไม่ติดตามด้วย Git
@@ -34,6 +36,7 @@ review_analysis/
 python -m review_analysis.extract_text --input-dir ./data --output ./review_analysis/outputs/data.json
 python -m review_analysis.run_cleaning --input ./review_analysis/outputs/data.json --output ./review_analysis/outputs/cleaned_data.json
 python -m review_analysis.analyze_tfidf --input ./review_analysis/outputs/cleaned_data.json --output ./review_analysis/outputs/tfidf_aspect_candidates.csv
+python -m review_analysis.cluster_terms --input ./review_analysis/outputs/tfidf_aspect_candidates.csv --output ./review_analysis/outputs/term_clusters.xlsx
 ```
 
 path ที่ผู้ใช้ระบุแบบ relative จะอ้างจาก working directory จึงควรรันคำสั่งข้างต้น
@@ -117,3 +120,63 @@ SETAR (2023) ทดลอง TF-IDF แบบ unigram, bigram และทั้
 หลังผู้ตรวจยืนยันคำและกลุ่มแล้ว การนับรายกลุ่มในขั้นถัดไปควรนับจำนวนรีวิวที่พบ
 อย่างน้อยหนึ่งคำในกลุ่ม โดยหนึ่งรีวิวนับครั้งเดียวต่อกลุ่ม ไม่ใช่บวก document
 frequency ของทุกคำ และคำกำกวมยังต้องตรวจบริบทก่อนยืนยัน Aspect
+
+## การจัดกลุ่มคำ/วลีตามความหมาย
+
+ติดตั้ง dependency ด้วยคำสั่งเดียวกับขั้น TF-IDF แล้วรันจาก root ของ repository:
+
+```bash
+python -m pip install -r review_analysis/requirements-tfidf.txt
+python -m review_analysis.cluster_terms --input ./review_analysis/outputs/tfidf_aspect_candidates.csv --output ./review_analysis/outputs/term_clusters.xlsx
+```
+
+สคริปต์อ่านคอลัมน์ `คำ/วลี` และ `ประเภท` โดยตรง ใช้ unigram และ bigram ร่วมกัน
+แต่เก็บข้อความและแถวต้นทางของแต่ละรายการไว้ตรวจความครบถ้วน คะแนน TF-IDF ไม่ได้
+ถูกใช้เป็น feature สำหรับ clustering เพราะคะแนนใกล้กันไม่ได้แปลว่าความหมายใกล้กัน
+และไม่มีรายการ Aspect หรือ keyword ล่วงหน้ามาบังคับผล
+
+โมเดลเริ่มต้นคือ
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` ผ่าน
+Sentence Transformers 5.1.1 เป็นโมเดล 384 มิติที่รองรับภาษาไทยและหลายภาษา
+โดย pin revision `e8f8c211226b894fcb81acc59f3b34ba3efd5f42` เป็นค่าเริ่มต้น
+ขนาดดาวน์โหลดใน cache ประมาณ 470 MB การดาวน์โหลดเกิดเฉพาะครั้งแรก CPU ใช้ได้
+แต่ช้ากว่า ส่วน `--device auto` จะเลือก CUDA เมื่อ PyTorch มองเห็น GPU
+
+เวกเตอร์ถูกทำ L2 normalization แล้วจัดกลุ่มด้วย HDBSCAN จาก scikit-learn 1.7.2
+บน Euclidean distance ซึ่งสัมพันธ์กับ cosine distance โดยตรงบนเวกเตอร์ normalized
+HDBSCAN เหมาะกับงานนี้เพราะไม่ต้องกำหนดจำนวนกลุ่มล่วงหน้า และทิ้งจุดที่ความหนาแน่น
+ไม่พอเป็น noise ได้ จุดเหล่านี้จะอยู่ในกลุ่ม `รอตรวจสอบ` ไม่ถูกลบอย่างเงียบ ๆ
+
+ค่าเริ่มต้นที่ใช้กับข้อมูลชุดนี้คือ `min_cluster_size=2`, `min_samples=1`,
+`cluster_selection_method=leaf`, `cluster_selection_epsilon=0.0`,
+`min_membership_probability=0.0`, `seed=42` และ `batch_size=64` จำนวนกลุ่มจึง
+เกิดจากความหนาแน่นของ embedding ไม่ได้บังคับให้ตรงกับจำนวน Aspect ที่คาดไว้
+`min_cluster_size=2` กำหนดว่ากลุ่มปกติต้องมีอย่างน้อย 2 รายการ และ `leaf` เลือก
+กลุ่มย่อยที่เฉพาะเจาะจงกว่า `eom` เพื่อลดกลุ่มใหญ่ที่ปะปน ข้อแลกเปลี่ยนคือเกิด
+กลุ่มคู่จำนวนมากและต้องใช้แรงผู้ตรวจมากขึ้น ส่วน `min_samples=1` ลดความเข้มงวด
+ของ core point แต่ยังคงคำที่ไม่อยู่ในบริเวณหนาแน่นเป็น noise ค่า seed ถูกตั้งให้
+ขั้น embedding ทำซ้ำได้; HDBSCAN ชุดนี้ไม่มีการสุ่ม
+
+ปรับเกณฑ์และทรัพยากรได้ เช่น:
+
+```bash
+python -m review_analysis.cluster_terms --min-cluster-size 5 --min-samples 3
+python -m review_analysis.cluster_terms --min-membership-probability 0.25 --device cpu --batch-size 32
+python -m review_analysis.cluster_terms --model-revision REVISION_อื่น
+python -m review_analysis.cluster_terms --help
+```
+
+ค่าที่เข้มงวดขึ้นมักทำให้ `รอตรวจสอบ` ใหญ่ขึ้น โปรแกรมพิมพ์ชื่อ/รุ่นโมเดล,
+เวอร์ชันไลบรารี, device, seed และพารามิเตอร์ทั้งหมดใน Terminal ทุกครั้ง Output มี
+ไฟล์เดียวคือ `review_analysis/outputs/term_clusters.xlsx` มีชีตเดียว `กลุ่มคำ`
+คอลัมน์ชื่อแง่มุมและหมายเหตุเว้นว่างเสมอ โปรแกรมตรวจจำนวน Input เท่ากับสมาชิก
+ทุกกลุ่ม และจะหยุดโดยไม่ตัดข้อความหากสมาชิกกลุ่มใดเกิน 32,767 ตัวอักษรต่อเซลล์
+ของ Excel กรณีนั้นรูปแบบที่เก็บครบคือรายละเอียดหนึ่งคำ/วลีต่อแถว ซึ่งต้องตกลง
+เปลี่ยนข้อกำหนดก่อนใช้งาน
+
+ข้อจำกัดสำคัญคือ embedding ของคำหรือวลีสั้นไม่มีบริบทจากรีวิว คำเดี่ยวกำกวม เช่น
+`น้ำ` อาจหมายถึงน้ำดื่ม น้ำทะเล หรือน้ำตก และอาจถูกจัดใกล้ความหมายที่ไม่ตรงกับ
+บริบทจริง unigram ยังอาจเป็นคำทั่วไป ส่วน bigram ให้บริบทเพิ่มแต่ยังไม่เท่าประโยค
+คะแนนหรือความแน่นของ clustering วัดโครงสร้างเวกเตอร์ ไม่ได้พิสูจน์ว่ากลุ่มเป็น
+Aspect ที่ถูกต้อง จึงต้องตรวจทั้งกลุ่มที่สอดคล้องและกลุ่มที่ปะปนก่อนกรอกชื่อใน
+คอลัมน์ D

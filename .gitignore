@@ -11,3 +11,4 @@ __pycache__/
 /candidates.csv
 /candidates.xlsx
 /review_analysis/outputs/
+.venv/
