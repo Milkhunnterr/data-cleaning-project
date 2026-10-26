@@ -15,9 +15,11 @@ import re
 import sys
 import unicodedata
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
+
+from review_analysis.pos_rules import MODES, keep_pos, tag_tokens
 
 try:
     from openpyxl import Workbook
@@ -84,6 +86,28 @@ class AnalysisResult:
     duplicate_groups: list[tuple[str, list[int]]]
     unigram_count: int
     bigram_count: int
+    filtered_pos: Counter[str] = field(default_factory=Counter)
+
+
+def token_decisions(tokens, stopwords, mode="baseline", tags=None):
+    """Exclusive reasons: original filters first, POS only on usable tokens.
+
+    Unknown tags fail allowlists but pass the explicit denylist. A stopword
+    rejected by POS too is counted only as a stopword, never twice.
+    """
+    if mode not in MODES:
+        raise ValueError(f"Unknown POS mode: {mode}")
+    if tags is not None and len(tags) != len(tokens):
+        raise ValueError("POS alignment mismatch: tag count")
+    if mode != "baseline" and tags is None:
+        raise ValueError("POS tags required for non-baseline mode")
+    decisions = []
+    for index, token in enumerate(tokens):
+        reason = classify_token(token, stopwords)
+        if reason == "usable" and mode != "baseline" and not keep_pos(mode, tags[index]):
+            reason = "pos"
+        decisions.append(reason)
+    return decisions
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -223,7 +247,8 @@ def tokenize_review(review: str) -> list[str]:
 
 
 def extract_features(
-    tokens: Sequence[str], stopwords: set[str]
+    tokens: Sequence[str], stopwords: set[str], *, mode="baseline", tags=None,
+    filtered_pos=None,
 ) -> tuple[Counter[Feature], Counter[str]]:
     """Extract features without joining across filtered tokens or boundaries.
 
@@ -234,13 +259,16 @@ def extract_features(
     removed_stopwords: Counter[str] = Counter()
     previous_usable: str | None = None
 
-    for token in tokens:
-        token_class = classify_token(token, stopwords)
+    for index, (token, token_class) in enumerate(
+        zip(tokens, token_decisions(tokens, stopwords, mode, tags))
+    ):
         if token_class == "space":
             continue
         if token_class != "usable":
             if token_class == "stopword":
                 removed_stopwords[token] += 1
+            elif token_class == "pos" and filtered_pos is not None:
+                filtered_pos[tags[index] or "UNKNOWN"] += 1
             previous_usable = None
             continue
 
@@ -277,21 +305,36 @@ def analyze_reviews(
     stopwords: set[str],
     min_df: int = 2,
     sort_by: str = "document_frequency",
+    *, mode: str = "baseline", prepared_tokens=None, prepared_tags=None,
 ) -> AnalysisResult:
     if min_df < 1:
         raise ValueError("min_df ต้องไม่น้อยกว่า 1")
     if sort_by not in {"document_frequency", "tfidf"}:
         raise ValueError("sort_by ต้องเป็น document_frequency หรือ tfidf")
 
+    if mode not in MODES:
+        raise ValueError(f"Unknown POS mode: {mode}")
+    for prepared in (prepared_tokens, prepared_tags):
+        if prepared is not None and len(prepared) != len(reviews):
+            raise ValueError("Prepared document count does not match input")
+
     tokenized_documents: list[list[str]] = []
     document_counts: list[Counter[Feature]] = []
     filtered_stopwords: Counter[str] = Counter()
+    filtered_pos: Counter[str] = Counter()
     total_counts: Counter[Feature] = Counter()
     document_frequencies: Counter[Feature] = Counter()
 
-    for review in reviews:
-        tokens = tokenize_review(review)
-        counts, removed = extract_features(tokens, stopwords)
+    for index, review in enumerate(reviews):
+        tokens = tokenize_review(review) if prepared_tokens is None else prepared_tokens[index]
+        if "".join(tokens) != review:
+            raise ValueError(f"Token alignment mismatch: Input {index + 1}")
+        tags = None
+        if mode != "baseline":
+            tags = tag_tokens(tokens) if prepared_tags is None else prepared_tags[index]
+        counts, removed = extract_features(
+            tokens, stopwords, mode=mode, tags=tags, filtered_pos=filtered_pos,
+        )
         tokenized_documents.append(tokens)
         document_counts.append(counts)
         filtered_stopwords.update(removed)
@@ -361,6 +404,7 @@ def analyze_reviews(
         duplicate_groups=find_duplicate_groups(reviews),
         unigram_count=sum(1 for item in candidates if item[0].kind == "unigram"),
         bigram_count=sum(1 for item in candidates if item[0].kind == "bigram"),
+        filtered_pos=filtered_pos,
     )
 
 
