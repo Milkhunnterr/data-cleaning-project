@@ -11,9 +11,15 @@ from review_analysis.cluster_terms import (
     build_cluster_rows,
     cluster_embeddings,
     load_candidates,
+    parse_args,
     validate_written_workbook,
     write_excel,
 )
+
+
+def test_default_cluster_selection_method_is_eom_and_leaf_remains_available():
+    assert parse_args([]).cluster_selection_method == "eom"
+    assert parse_args(["--cluster-selection-method", "leaf"]).cluster_selection_method == "leaf"
 
 
 def test_load_candidates_keeps_unigram_and_bigram_identity(tmp_path: Path):

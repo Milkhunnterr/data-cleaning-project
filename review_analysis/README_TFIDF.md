@@ -24,7 +24,6 @@ review_analysis/
 ├── run_cleaning.py
 ├── analyze_tfidf.py
 ├── cluster_terms.py
-├── tfidf_stopwords.txt
 ├── requirements-tfidf.txt
 └── outputs/                       # ผลลัพธ์ที่สร้าง ไม่ติดตามด้วย Git
 ```
@@ -67,8 +66,11 @@ python -m review_analysis.analyze_tfidf --input ./review_analysis/outputs/cleane
 `candidates.csv` และ `candidates.xlsx` ในตำแหน่งเดียวกัน
 
 ดูตัวเลือกทั้งหมดด้วย `python -m review_analysis.analyze_tfidf --help`
-รายการ stopwords อยู่ใน `review_analysis/tfidf_stopwords.txt` และแก้ไขได้
-ทีละบรรทัด โปรแกรมจะแสดง stopwords ที่พบและคัดออกจริงพร้อมจำนวนครั้งใน Terminal
+รายการ stopwords ใช้ `set(pythainlp.corpus.thai_stopwords())` โดยตรง
+ไม่รวมไฟล์หรือรายการยกเว้นเพิ่มเติม จึงไม่มีตัวเลือก `--stopwords`
+โปรแกรมแสดงรุ่น PyThaiNLP, จำนวน stopwords ทั้งหมด, สถานะของคำ
+`ไม่`, `ราคา`, `วิว`, `บริการ`, `สะอาด` ในรายการ library และคำที่
+พบและคัดออกจริงพร้อมความถี่ใน Terminal
 
 ## การเตรียม token และ bigram
 
@@ -148,12 +150,12 @@ HDBSCAN เหมาะกับงานนี้เพราะไม่ต้
 ไม่พอเป็น noise ได้ จุดเหล่านี้จะอยู่ในกลุ่ม `รอตรวจสอบ` ไม่ถูกลบอย่างเงียบ ๆ
 
 ค่าเริ่มต้นที่ใช้กับข้อมูลชุดนี้คือ `min_cluster_size=2`, `min_samples=1`,
-`cluster_selection_method=leaf`, `cluster_selection_epsilon=0.0`,
+`cluster_selection_method=eom`, `cluster_selection_epsilon=0.0`,
 `min_membership_probability=0.0`, `seed=42` และ `batch_size=64` จำนวนกลุ่มจึง
 เกิดจากความหนาแน่นของ embedding ไม่ได้บังคับให้ตรงกับจำนวน Aspect ที่คาดไว้
-`min_cluster_size=2` กำหนดว่ากลุ่มปกติต้องมีอย่างน้อย 2 รายการ และ `leaf` เลือก
-กลุ่มย่อยที่เฉพาะเจาะจงกว่า `eom` เพื่อลดกลุ่มใหญ่ที่ปะปน ข้อแลกเปลี่ยนคือเกิด
-กลุ่มคู่จำนวนมากและต้องใช้แรงผู้ตรวจมากขึ้น ส่วน `min_samples=1` ลดความเข้มงวด
+`min_cluster_size=2` กำหนดว่ากลุ่มปกติต้องมีอย่างน้อย 2 รายการ และ `eom` เลือก
+กลุ่มจากความคงอยู่โดยรวม ซึ่งอาจได้กลุ่มใหญ่กว่า `leaf`; ยังเลือกทดลอง `leaf`
+ได้ด้วย `--cluster-selection-method leaf` ส่วน `min_samples=1` ลดความเข้มงวด
 ของ core point แต่ยังคงคำที่ไม่อยู่ในบริเวณหนาแน่นเป็น noise ค่า seed ถูกตั้งให้
 ขั้น embedding ทำซ้ำได้; HDBSCAN ชุดนี้ไม่มีการสุ่ม
 

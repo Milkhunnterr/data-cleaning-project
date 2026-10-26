@@ -86,7 +86,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-cluster-size", type=positive_int, default=2)
     parser.add_argument("--min-samples", type=positive_int, default=1)
     parser.add_argument("--cluster-selection-epsilon", type=nonnegative_float, default=0.0, help="รวมคลัสเตอร์ที่ห่างกันไม่เกินค่านี้บน normalized Euclidean distance")
-    parser.add_argument("--cluster-selection-method", choices=("eom", "leaf"), default="leaf")
+    parser.add_argument("--cluster-selection-method", choices=("eom", "leaf"), default="eom")
     parser.add_argument("--min-membership-probability", type=probability, default=0.0, help="สมาชิกที่มีความมั่นคงต่ำกว่าค่านี้จะไปกลุ่มรอตรวจสอบ")
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args(argv)

@@ -3,12 +3,14 @@ import math
 from pathlib import Path
 
 import pytest
+from pythainlp.corpus import thai_stopwords
 from openpyxl import load_workbook
 
 from review_analysis.analyze_tfidf import (
     Feature,
     analyze_reviews,
     extract_features,
+    parse_args,
     tokenize_review,
     write_csv,
     write_excel,
@@ -42,6 +44,19 @@ def test_bigram_allows_ordinary_space():
 def test_bigram_does_not_cross_filtered_token_or_boundary(text, stopwords):
     feature = Feature("bigram", ("วิว", "สวย"))
     assert feature_count(text, feature, stopwords) == 0
+
+
+def test_pythainlp_stopword_is_filtered_without_joining_neighbors():
+    stopwords = set(thai_stopwords())
+    assert "และ" in stopwords
+    counts, removed = extract_features(tokenize_review("วิวและสวย"), stopwords)
+    assert counts[Feature("bigram", ("วิว", "สวย"))] == 0
+    assert removed["และ"] == 1
+
+
+def test_stopwords_argument_has_been_removed():
+    with pytest.raises(SystemExit):
+        parse_args(["--stopwords", "custom.txt"])
 
 
 def test_unigram_and_bigram_counts_document_frequency_and_tfidf():

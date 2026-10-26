@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.metadata
 import json
 import math
 import re
@@ -29,6 +30,7 @@ except ImportError as exc:  # pragma: no cover - depends on local environment
     ) from exc
 
 try:
+    from pythainlp.corpus import thai_stopwords
     from pythainlp.tokenize import word_tokenize
 except ImportError as exc:  # pragma: no cover - depends on local environment
     raise SystemExit(
@@ -40,7 +42,6 @@ BASE_DIR = Path(__file__).resolve().parent
 OUTPUTS_DIR = BASE_DIR / "outputs"
 DEFAULT_INPUT = OUTPUTS_DIR / "cleaned_data.json"
 DEFAULT_OUTPUT = OUTPUTS_DIR / "tfidf_aspect_candidates.csv"
-DEFAULT_STOPWORDS = BASE_DIR / "tfidf_stopwords.txt"
 
 EXCEL_SHEETS = (("Unigram", "unigram"), ("Bigram", "bigram"))
 EXCEL_COLUMN_WIDTHS = (9, 25, 12, 17, 18, 20, 88, 28, 32)
@@ -104,12 +105,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=f"พาธ CSV (default: {DEFAULT_OUTPUT}); Excel ใช้ชื่อเดียวกันนามสกุล .xlsx",
     )
     parser.add_argument(
-        "--stopwords",
-        type=Path,
-        default=DEFAULT_STOPWORDS,
-        help="ไฟล์ stopwords แก้ไขได้ หนึ่งคำต่อบรรทัด",
-    )
-    parser.add_argument(
         "--min-df",
         type=positive_int,
         default=2,
@@ -167,19 +162,6 @@ def load_reviews(path: Path) -> list[str]:
     if not data:
         raise ValueError("Input ไม่มีรีวิว")
     return data
-
-
-def load_stopwords(path: Path) -> set[str]:
-    try:
-        lines = path.read_text(encoding="utf-8-sig").splitlines()
-    except FileNotFoundError as exc:
-        raise ValueError(f"ไม่พบไฟล์ stopwords: {path}") from exc
-
-    return {
-        line.strip()
-        for line in lines
-        if line.strip() and not line.lstrip().startswith("#")
-    }
 
 
 def find_duplicate_groups(reviews: Sequence[str]) -> list[tuple[str, list[int]]]:
@@ -522,10 +504,23 @@ def print_token_examples(
         print(f"Tokens: {tokens}")
 
 
-def print_stopword_report(removed: Counter[str]) -> None:
-    print("\n=== Stopwords ที่พบและคัดออกจากสำเนาสำหรับวิเคราะห์ ===")
+def package_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "ไม่ทราบ"
+
+
+def print_stopword_report(removed: Counter[str], stopwords: set[str]) -> None:
+    print("\n=== Stopwords จาก PyThaiNLP ===")
+    print(f"PyThaiNLP version: {package_version('pythainlp')}")
+    print(f"จำนวน stopwords ทั้งหมด: {len(stopwords):,}")
+    print("ตรวจคำสำคัญในรายการ library:")
+    for word in ("ไม่", "ราคา", "วิว", "บริการ", "สะอาด"):
+        print(f"  {word}: {'อยู่' if word in stopwords else 'ไม่อยู่'}")
+    print("คำที่พบและคัดออกจากสำเนาสำหรับวิเคราะห์:")
     if not removed:
-        print("ไม่พบ stopword จากรายการที่กำหนด")
+        print("ไม่พบ stopword จากรายการของ PyThaiNLP")
         return
     print(", ".join(f"{word} ({count:,})" for word, count in sorted(removed.items())))
 
@@ -544,14 +539,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         excel_output = excel_path_for(args.output)
         if excel_output.resolve() == args.output.resolve():
             raise ValueError("--output ต้องเป็นพาธ CSV ไม่ใช่ไฟล์ .xlsx")
-        protected_paths = {args.input.resolve(), args.stopwords.resolve()}
         if (
-            args.output.resolve() in protected_paths
-            or excel_output.resolve() in protected_paths
+            args.output.resolve() == args.input.resolve()
+            or excel_output.resolve() == args.input.resolve()
         ):
-            raise ValueError("ไฟล์ Output ต้องไม่ทับไฟล์ Input หรือไฟล์ stopwords")
+            raise ValueError("ไฟล์ Output ต้องไม่ทับไฟล์ Input")
         reviews = load_reviews(args.input)
-        stopwords = load_stopwords(args.stopwords)
+        stopwords = set(thai_stopwords())
         result = analyze_reviews(
             reviews,
             stopwords,
@@ -560,7 +554,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print_duplicate_report(len(reviews), result.duplicate_groups)
         print_token_examples(reviews, result.tokenized_documents, args.token_examples)
-        print_stopword_report(result.filtered_stopwords)
+        print_stopword_report(result.filtered_stopwords, stopwords)
         print("\n=== พารามิเตอร์ ===")
         print("หน่วยเอกสาร: 1 รีวิว")
         print("TF: จำนวนครั้งดิบ (sublinear_tf=False)")
