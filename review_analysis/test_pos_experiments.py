@@ -15,12 +15,12 @@ from review_analysis import run_pos_experiments as runner
 
 
 @pytest.mark.parametrize("tag,expected", [
-    ("NOUN", (True, True, True)), ("PROPN", (True, True, True)),
-    ("VERB", (True, True, True)), ("AUX", (False, True, False)),
+    ("NOUN", (True, True, True)), ("PROPN", (False, False, False)),
+    ("VERB", (True, True, True)), ("AUX", (False, False, False)),
     ("ADJ", (False, False, True)), ("ADV", (False, False, False)),
     ("CCONJ", (False, False, False)), ("SCONJ", (False, False, False)),
-    ("PRON", (False, True, False)), ("X", (False, True, False)),
-    ("UNKNOWN", (False, True, False)), (None, (False, True, False)),
+    ("PRON", (False, False, False)), ("X", (False, False, False)),
+    ("UNKNOWN", (False, False, False)), (None, (False, False, False)),
 ])
 def test_policy_matrix(tag, expected):
     assert pos.keep_pos("baseline", tag)
@@ -52,7 +52,7 @@ def test_context_occurrences_df_examples_and_original_N():
     original = list(reviews)
     documents = [["ดี", " ", "ดี"], ["ดี"], ["ดี", " ", "มาก"]]
     tags = [["VERB", "PUNCT", "ADJ"], ["ADJ"], ["VERB", "PUNCT", "ADV"]]
-    result = tf.analyze_reviews(reviews, {"มาก"}, min_df=1, mode="noun_verb", prepared_tokens=documents, prepared_tags=tags)
+    result = tf.analyze_reviews(reviews, {"มาก"}, min_df=1, mode="noun_verb", prepared_tokens=documents, prepared_tags=tags, lexicon=type("Lexicon", (), {"lookup": lambda self, token: (True, frozenset({"VERB", "ADJ"}))})())
     assert reviews == original
     assert result.tokenized_documents == documents
     assert result.unigram_count == 1 and result.bigram_count == 0

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from review_analysis.pos_rules import MODES, keep_pos, tag_tokens
+from review_analysis.pos_rules import MODES, WordNetLexicon, accepts, decide, tag_tokens
 
 try:
     from openpyxl import Workbook
@@ -89,11 +89,11 @@ class AnalysisResult:
     filtered_pos: Counter[str] = field(default_factory=Counter)
 
 
-def token_decisions(tokens, stopwords, mode="baseline", tags=None):
+def token_decisions(tokens, stopwords, mode="baseline", tags=None, lexicon=None):
     """Exclusive reasons: original filters first, POS only on usable tokens.
 
-    Unknown tags fail allowlists but pass the explicit denylist. A stopword
-    rejected by POS too is counted only as a stopword, never twice.
+    Non-baseline features require contextual POS / WordNet agreement.
+    Base filters take precedence, so rejected stopwords are not counted twice.
     """
     if mode not in MODES:
         raise ValueError(f"Unknown POS mode: {mode}")
@@ -101,10 +101,12 @@ def token_decisions(tokens, stopwords, mode="baseline", tags=None):
         raise ValueError("POS alignment mismatch: tag count")
     if mode != "baseline" and tags is None:
         raise ValueError("POS tags required for non-baseline mode")
+    if mode != "baseline" and lexicon is None:
+        lexicon = WordNetLexicon()
     decisions = []
     for index, token in enumerate(tokens):
         reason = classify_token(token, stopwords)
-        if reason == "usable" and mode != "baseline" and not keep_pos(mode, tags[index]):
+        if reason == "usable" and mode != "baseline" and not accepts(mode, decide(tags[index], lexicon.lookup(token))):
             reason = "pos"
         decisions.append(reason)
     return decisions
@@ -248,7 +250,7 @@ def tokenize_review(review: str) -> list[str]:
 
 def extract_features(
     tokens: Sequence[str], stopwords: set[str], *, mode="baseline", tags=None,
-    filtered_pos=None,
+    filtered_pos=None, lexicon=None,
 ) -> tuple[Counter[Feature], Counter[str]]:
     """Extract features without joining across filtered tokens or boundaries.
 
@@ -260,7 +262,7 @@ def extract_features(
     previous_usable: str | None = None
 
     for index, (token, token_class) in enumerate(
-        zip(tokens, token_decisions(tokens, stopwords, mode, tags))
+        zip(tokens, token_decisions(tokens, stopwords, mode, tags, lexicon))
     ):
         if token_class == "space":
             continue
@@ -268,7 +270,7 @@ def extract_features(
             if token_class == "stopword":
                 removed_stopwords[token] += 1
             elif token_class == "pos" and filtered_pos is not None:
-                filtered_pos[tags[index] or "UNKNOWN"] += 1
+                filtered_pos[str(tags[index] or "UNKNOWN")] += 1
             previous_usable = None
             continue
 
@@ -305,7 +307,7 @@ def analyze_reviews(
     stopwords: set[str],
     min_df: int = 2,
     sort_by: str = "document_frequency",
-    *, mode: str = "baseline", prepared_tokens=None, prepared_tags=None,
+    *, mode: str = "baseline", prepared_tokens=None, prepared_tags=None, lexicon=None,
 ) -> AnalysisResult:
     if min_df < 1:
         raise ValueError("min_df ต้องไม่น้อยกว่า 1")
@@ -318,6 +320,8 @@ def analyze_reviews(
         if prepared is not None and len(prepared) != len(reviews):
             raise ValueError("Prepared document count does not match input")
 
+    if mode != "baseline" and lexicon is None:
+        lexicon = WordNetLexicon()
     tokenized_documents: list[list[str]] = []
     document_counts: list[Counter[Feature]] = []
     filtered_stopwords: Counter[str] = Counter()
@@ -333,7 +337,7 @@ def analyze_reviews(
         if mode != "baseline":
             tags = tag_tokens(tokens) if prepared_tags is None else prepared_tags[index]
         counts, removed = extract_features(
-            tokens, stopwords, mode=mode, tags=tags, filtered_pos=filtered_pos,
+            tokens, stopwords, mode=mode, tags=tags, filtered_pos=filtered_pos, lexicon=lexicon,
         )
         tokenized_documents.append(tokens)
         document_counts.append(counts)

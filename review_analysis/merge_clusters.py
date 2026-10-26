@@ -24,7 +24,6 @@ from review_analysis.pos_rules import MODES
 OUTPUTS_DIR = first.BASE_DIR / "outputs"
 DEFAULT_DISTANCE_THRESHOLD = 0.25  # Experimental, not a validated optimum.
 SHEET_NAME = "กลุ่มคำ"
-SUMMARY_SHEET = "สรุปการรัน"
 COLUMNS = ["รหัสกลุ่มใหม่", "รหัสกลุ่มเดิมที่นำมารวม", "จำนวนกลุ่มเดิม",
            "คำ/วลีทั้งหมดในกลุ่ม", "จำนวนคำ/วลี", "ชื่อแง่มุมที่ผู้ตรวจยืนยัน", "หมายเหตุผู้ตรวจ"]
 WIDTHS = (18, 28, 18, 88, 18, 32, 32)
@@ -206,7 +205,7 @@ def style_sheet(sheet, widths, reviewer_columns=()):
 def write_workbook(path, groups, rows, summary):
     validate_merge(groups, rows)
     values = [[r.group_id, "\n".join(r.source_ids), len(r.source_ids), "\n".join(r.members), len(r.members), None, None] for r in rows]
-    for row in values + [[str(k), str(v)] for k, v in summary.items()]:
+    for row in values:
         for value in row:
             if isinstance(value, str) and excel_length(value) > first.EXCEL_CELL_LIMIT:
                 raise ValueError(f"กลุ่ม/รายการ {row[0]}: ข้อความเกินข้อจำกัด Excel {first.EXCEL_CELL_LIMIT:,}; หยุดโดยไม่ตัดข้อความ")
@@ -216,10 +215,8 @@ def write_workbook(path, groups, rows, summary):
     sheet.append(COLUMNS)
     for row in values:
         sheet.append(row)
-    details = workbook.create_sheet(SUMMARY_SHEET)
-    details.append(["รายการ", "ค่า"])
     for key, value in summary.items():
-        details.append([key, value])
+        print(f"{key}: {value}")
     # Preserve literal text, even members beginning with '='.
     for ws in workbook:
         for row in ws:
@@ -227,7 +224,6 @@ def write_workbook(path, groups, rows, summary):
                 if isinstance(cell.value, str):
                     cell.data_type = "s"
     style_sheet(sheet, WIDTHS, (6, 7))
-    style_sheet(details, (34, 110))
     buffer = BytesIO()
     workbook.save(buffer)
     workbook.close()

@@ -184,176 +184,141 @@ Aspect ที่ถูกต้อง จึงต้องตรวจทั้
 คอลัมน์ D
 
 
-## การทดลอง POS สี่โหมด
+## การทดลอง POS ร่วมกับ Thai WordNet สี่โหมด
 
-รันจาก repository root (คำสั่งบรรทัดเดียว ใช้ใน PowerShell ได้):
+ใช้ POS `perceptron/orchid_ud` บน token ของรีวิวทั้งฉบับก่อนกรอง เพื่อรักษาบริบท
+ตรวจจำนวน/ข้อความ/ลำดับ token ให้ตรงกัน หากเลื่อนตำแหน่งให้หยุด ไม่จับคู่เงียบ ๆ
+ใช้ Thai WordNet ผ่าน NLTK `synsets(token, lang="tha")` และรวบรวมทุก synset:
+`n → NOUN`, `v → VERB`, `a/s → ADJ`, `r → ADV` ไม่เดา PROPN หรือ conjunction
+cache เฉพาะ WordNet รายคำ ไม่ cache POS รายคำ เพราะคำเดิมเปลี่ยนหน้าที่ตามบริบทได้
+API อ้างอิง [NLTK WordNet](https://www.nltk.org/howto/wordnet.html)
+
+ติดตั้งทรัพยากรเพิ่มเติมครั้งแรก (ไม่ดาวน์โหลดอัตโนมัติระหว่างวิเคราะห์):
 
 ```powershell
-python -m review_analysis.run_pos_experiments --mode all
-python -m review_analysis.run_pos_experiments --mode noun_verb
-python -m review_analysis.run_pos_experiments --mode remove_adj_adv_conj
-python -m review_analysis.run_pos_experiments --mode noun_verb_adj
+python -m pip install -r review_analysis/requirements-tfidf.txt
+python -m nltk.downloader wordnet omw-1.4
 ```
 
-เลือก baseline อย่างเดียวด้วย `--mode baseline`; ตัวเลือกที่ใช้ร่วมกันทุกโหมดคือ
-`--input`, `--min-df` (2), `--sort-by` (document_frequency), `--device` (auto)
-และ `--token-examples` (2 รีวิวแรก; 0 ปิดตัวอย่าง) คำสั่งเดิมของ
-`analyze_tfidf` และ `cluster_terms` ยังใช้ได้เหมือนเดิม
+ใช้ NLTK 3.9.2, Princeton WordNet ผ่าน OMW 1.4 ภาษาไทย หาก corpus โหลดไม่ได้
+โปรแกรมหยุดแจ้งข้อผิดพลาด ไม่ตีความว่าไม่พบคำทุกคำ
 
-| โหมด | กฎบน token ที่ผ่านตัวกรองเดิม |
-|---|---|
-| baseline (0) | ไม่ใช้ POS ตัด feature |
-| noun_verb (1) | NOUN, PROPN, VERB |
-| remove_adj_adv_conj (2) | ตัด ADJ, ADV, CCONJ, SCONJ เก็บ tag อื่น |
-| noun_verb_adj (3) | NOUN, PROPN, VERB, ADJ |
+| สถานะราย occurrence | หลักฐาน | เข้า candidates หลัก |
+|---|---|---|
+| ยืนยันร่วมกัน | POS อยู่ในชุดชนิดคำจากทุก synset รวมกรณีหลายชนิด | ต้องผ่านกฎโหมดอีกชั้น |
+| ขัดแย้ง/เทียบป้ายไม่ได้ | WordNet พบคำแต่ไม่สนับสนุนป้าย POS | ไม่ผ่าน |
+| มีเฉพาะผล POS | POS ทราบชนิด แต่ WordNet ไม่พบ | ไม่ผ่าน |
+| ไม่ทราบชนิดคำ | POS เป็น X/ไม่ทราบ/ป้ายผิดรูปแบบ | ไม่ผ่าน |
 
-PROPN นับเป็นหมวดนาม; AUX ไม่ใช่ VERB ในกฎทั้งสองแบบที่อนุญาตกริยา
-tag ที่ไม่รู้จัก (รวม None/ว่าง/X) จะถูกตัดในแบบ 1/3 แต่เก็บในแบบ 2
-ตามหลักตัดเฉพาะสี่ tag ที่ระบุ ไม่มีการเดาความหมายหรือเพิ่มกฎเฉพาะคำ
+- `baseline`: ไม่กรอง POS/WordNet และไม่โหลดทั้งสองทรัพยากรเมื่อรันเดี่ยว
+- `noun_verb`: ยืนยันร่วมกันและเป็น NOUN/VERB; PROPN ไม่เท่ากับ NOUN โดยอัตโนมัติ
+- `noun_verb_adj`: ยืนยันร่วมกันและเป็น NOUN/VERB/ADJ
+- `remove_adj_adv_conj`: ตัด ADJ/ADV/CCONJ/SCONJ ตาม POS; ที่เหลือต้องยืนยันร่วมกัน
+  เนื่องจาก WordNet mapping ครอบคลุมเพียง NOUN/VERB/ADJ/ADV จึงเหลือ NOUN/VERB
+  และผลอาจเหมือน noun_verb ไม่แต่งกฎให้โหมดต่างกัน
 
-### วิธีระบุ POS และ mapping
+คง tokenizer, stopwords, min_df=2, สูตร TF-IDF และ N ของรีวิวทั้งหมด
+แม้รีวิวไม่เหลือ feature ก็ยังอยู่ใน N; unigram ผ่านจริงใน occurrence นั้น
+bigram ใช้กฎ adjacency เดิม (ช่องว่างธรรมดาโปร่งใส) ทั้งสอง occurrence ต้องผ่าน
+ไม่เชื่อมข้าม token ที่ถูกกรอง ไม่เปลี่ยนข้อความรีวิวหรือรีวิวตัวอย่าง
+ไม่มีการแก้สะกด รวมเศษคำ หรือกำหนด Aspect
 
-ทดสอบด้วย PyThaiNLP **5.4.0**, `engine="perceptron"`, `corpus="orchid_ud"`
-ใช้โมเดล ORCHID ที่มากับ library และการแปลง Universal POS ของ library โดยตรง
-แหล่งตรวจสอบ: [API ของ PyThaiNLP 5.4.0](https://pythainlp.org/docs/5.4.0/api/tag.html)
-และ source `pythainlp/tag/orchid.py` ของ library ที่ติดตั้ง
-ตารางต่อไปนี้ถอดจาก `pythainlp.tag.orchid.TO_UD` ในรุ่นที่ติดตั้ง:
+### Output และคำสั่ง
 
-| ORCHID tag | Universal POS |
-|---|---|
-| NCMN, NTTL, CNIT, CLTV, CMTR, CFQC, CVBL | NOUN |
-| NPRP | PROPN |
-| VACT, VSTA | VERB |
-| NONM, **VATT**, DONM | **ADJ** |
-| ADVN, ADVI, ADVP, ADVS | ADV |
-| INT | INTJ |
-| PPRS, PDMN, PNTR | PRON |
-| DDAN, DDAC, DDBQ, DDAQ, DIAC, DIBQ, DIAQ | DET |
-| NCNM, NLBL, DCNM | NUM |
-| XVBM, XVAM, XVMM, XVBB, XVAE | AUX |
-| RPRE | ADP |
-| JCRG | CCONJ |
-| PREL, JSBR, JCMP | SCONJ |
-| FIXN, FIXV, EAFF, EITT, AITT, NEG | PART |
-| PUNC | PUNCT |
+คง `outputs/{mode}/{mode}_tfidf.csv`, `{mode}_tfidf.xlsx`, `{mode}_cluster.xlsx`
+ทั้งสี่โหมด และ `outputs/merged_clusters/{mode}_merged.xlsx` ตามเดิม
+เพิ่มเพียง `outputs/pos_wordnet_review.xlsx` หนึ่งชีต: หนึ่งแถวต่อ occurrence
+ที่ผ่านตัวกรองพื้นฐาน (ไม่ใช่ stopword/เครื่องหมาย/placeholder ฯลฯ)
+เก็บทั้งผ่าน/ไม่ผ่าน พร้อม Input index เริ่ม 1, ข้อความ Input ไม่ดัดแปลง,
+ตำแหน่ง token ก่อนกรองเริ่ม 1, token, POS, WordNet, สถานะ, flags ทั้งสามโหมด และเหตุผล
+Input ค่าเริ่มต้นอ้างถึง `review_analysis/outputs/cleaned_data.json` ไม่ใช่ข้อมูลก่อน Clean
+ถ้าใช้ `--input` อื่น เลข Input อ้างถึงไฟล์ที่ระบุจริงและแสดงเส้นทางใน Terminal
 
-ตารางของ library มี identity mapping สำหรับ NOUN, PROPN, ADJ, ADV, PRON,
-DET, NUM, AUX, ADP, CCONJ, SCONJ, PART, PUNCT และค่าว่างไปค่าว่างด้วย
-`orchid_ud` มีข้อยกเว้นภายใน library ให้ `การ`/`ความ` เป็น NOUN ซึ่งใช้ตาม
-library โดยไม่ได้เพิ่มข้อยกเว้นเอง (ทั้งสองคำยังถูก stopwords กรอง)
-ไม่มี `startswith("V")`: VATT ต้องเข้าสู่ ADJ จึงถูกตัดในแบบ 1/2 และผ่านแบบ 3
-หาก library เปลี่ยน token หรือไม่สามารถ map tag ได้ runner หยุดพร้อมข้อผิดพลาด
-แทนการเลื่อน token หรือแต่ง mapping เพิ่ม
+รัน non-baseline โหมดเดียวก็อัปเดต audit ของทั้ง Input เพื่อเทียบ flags ทั้งสามโหมด
+แต่ไม่แก้ TF-IDF/clustering/merged ของโหมดอื่น; baseline เดี่ยวไม่แตะ audit เดิม
+ไม่มีชีต “สรุปการรัน” ใน Excel ที่สร้างใหม่ทุกส่วน; สรุปพารามิเตอร์และจำนวนแสดง Terminal
+ไม่ไล่ลบชีตในไฟล์เก่าหรือไฟล์ที่มนุษย์แก้ ไม่สร้างรายงานเสริม timestamp หรือ backups
+**ปิด Excel ก่อนรัน และ Save As ก่อนกรอกแง่มุมเอง เพราะรันซ้ำทับชื่อเดิม**
+กรณีไม่มี candidates เขียน CSV/header และ Excel ว่างใหม่; candidates ไม่พอ clustering
+เก็บทั้งหมดเป็นรอตรวจสอบ ไม่ทิ้งไฟล์เก่าให้เหมือนผลใหม่
 
-ใช้ token จาก `tokenize_review` เดิม (newmm) ทั้งรีวิว รวมช่องว่าง วรรคตอน
-newline และ placeholder เพื่อระบุ POS ในบริบทก่อนกรอง จากนั้นตรวจข้อความ ลำดับ
-และจำนวน token ที่ tagger คืนมาตรงกับ input ทุกตำแหน่ง คำเดียวกันต่างบริบท
-จึงอาจผ่านเฉพาะบาง occurrence; จำนวนครั้ง df และรีวิวตัวอย่างคำนวณจาก
-occurrence ที่ผ่านจริง ข้อความตัวอย่างยังเป็นรีวิวเต็มตามต้นฉบับ
-
-ฟังก์ชันกลางใน `analyze_tfidf.py` อ่านข้อมูล สร้าง features คำนวณ/เรียง TF-IDF
-เลือกตัวอย่างและส่งออก ส่วน `pos_rules.py` ระบุกฎแต่ละแบบอย่างชัดเจน
-runner ตัดคำและ tag ร่วมครั้งเดียว แต่ baseline ไม่ใช้ POS ในการตัดสิน feature
-ทุกโหมดใช้ `set(thai_stopwords())` โดยตรงและ N เท่ากับจำนวนรีวิวทั้งหมด
-แม้รีวิวบางรายการไม่เหลือ features; อันดับเริ่มใหม่ภายในแต่ละโหมด
-
-ลำดับเหตุผลการตัดใช้ตัวกรองเดิมก่อน แล้วใช้ POS เฉพาะ usable tokens
-Terminal รายงาน stopword occurrences และ POS-only occurrences แยกกัน
-แจกแจง POS-only ตาม tag จึงไม่มีการนับ occurrence เดียวซ้ำในสองยอดนี้
-ช่องว่างธรรมดาข้ามได้ตามกฎเดิม แต่ stopword, token ที่ POS ตัด, newline,
-placeholder, ตัวเลขและสัญลักษณ์เป็น boundary จึงไม่จับคู่คำสองข้างใหม่
-ตัวอย่าง token/POS และ bigram ใน Terminal ใช้ Input index เดียวกันทุกโหมด
-และแสดงสถานะก่อนใช้ min_df (bigram ที่ผ่าน POS อาจไม่ผ่าน min_df ภายหลัง)
-
-Clustering ใช้ default จาก `cluster_terms.parse_args([])` ร่วมกันทุกโหมดและ
-ตรึงวิธีเลือกกลุ่มเป็น EOM: โมเดล/revision, L2 normalization, Euclidean metric,
-min_cluster_size=2, min_samples=1, epsilon=0, membership threshold=0,
-seed=42, batch_size=64 เหมือนเดิม ไม่มี embedding cache ระหว่างการทดลอง
-candidate ว่างจะได้ตารางหัวคอลัมน์อย่างเดียว; candidate น้อยกว่า 2 จะอยู่
-รอตรวจสอบทั้งหมดโดยข้าม embedding/HDBSCAN และแจ้งตรง ๆ ไม่มีการสร้างกลุ่มปกติปลอม
-
-### Output และการตรวจเปรียบเทียบ
-
-ทุกครั้งเขียนลง `review_analysis/outputs/{mode}/` โดยตรง โดย mode คือ
-`baseline`, `noun_verb`, `remove_adj_adv_conj`, `noun_verb_adj`
-แต่ละโฟลเดอร์มี `{mode}_tfidf.csv`, `{mode}_tfidf.xlsx`, `{mode}_cluster.xlsx`
-เช่น `noun_verb_tfidf.csv`, `noun_verb_tfidf.xlsx`, `noun_verb_cluster.xlsx`
-ใช้ตัวส่งออกและรูปแบบเดิมทั้งหมด รวมชีต สี และช่องผู้ตรวจที่ว่าง
-รันซ้ำจะเขียนทับไฟล์ชื่อเดิม: **ควร Save As เป็นไฟล์ชื่ออื่นก่อนกรอกแง่มุมหรือหมายเหตุเอง**
-เพราะผลใหม่จะล้างข้อมูลผู้ตรวจในไฟล์ผลลัพธ์ชื่อเดิม
-`--mode all` ส่งออกครบ 4 โหมด; โหมดเดียวเขียนเฉพาะ 3 ไฟล์ของโหมดนั้น
-clustering อ่าน CSV ที่เพิ่งส่งออกของโหมดเดียวกัน (เมื่อไม่มี candidate จะส่งออกกลุ่มว่าง)
-ไม่มีการสร้างโฟลเดอร์รอบใหม่ timestamp random suffix หรือสำรองอัตโนมัติ
-ไม่แก้ `data.json`, `cleaned_data.json` หรือไฟล์ผลรุ่นก่อนที่อยู่ตรงใต้ outputs
-โฟลเดอร์เก่า `before_pythainlp_eom_*` และ `pos_run_*` ไม่ถูกใช้งานหรือถูกลบโดย runner
-ผลลัพธ์ยังอยู่ใต้ outputs ซึ่ง Git ignore และไม่สร้างไฟล์รายงานหรือ log เพิ่มอัตโนมัติ
-
-Terminal สรุป unigram/bigram/candidates, กลุ่มปกติ, จำนวน/สัดส่วนรอตรวจสอบ
-และ POS-only occurrences แยก tag; เมื่อไม่มี candidate สัดส่วนจะแสดง N/A
-โปรแกรมแสดงกลุ่มจริงขนาดใหญ่เพื่อให้ตรวจ ไม่มีการตั้งชื่อ Aspect อัตโนมัติ
-การประเมินควรดูทั้งกลุ่มที่สอดคล้อง กลุ่มปะปน และบริบทที่ tag ผิด:
-โมเดล ORCHID มาจากข้อความวิชาการ ซึ่งอาจต่างจากรีวิวท่องเที่ยว
-จำนวนคำหรือ noise ที่น้อยลงจึงไม่ได้แปลว่าคุณภาพดีที่สุดโดยอัตโนมัติ
-การทดลองนี้ตรึง EOM ทุกโหมด จึงเปรียบเทียบผลของกฎ POS ภายใต้ tagger เดียวกันได้
-
-รันชุดทดสอบทั้งหมด:
+PowerShell จาก repository root (แต่ละคำสั่งหนึ่งบรรทัด; merging ทำต่อเมื่อรอบแรกสำเร็จ):
 
 ```powershell
+python -m review_analysis.run_pos_experiments --mode all --token-examples 0; if ($LASTEXITCODE -eq 0) { python -m review_analysis.merge_clusters --mode all --distance-threshold 0.25 }
+python -m review_analysis.run_pos_experiments --mode noun_verb --token-examples 0; if ($LASTEXITCODE -eq 0) { python -m review_analysis.merge_clusters --mode noun_verb --distance-threshold 0.25 }
 python -m pytest review_analysis -q
 ```
 
+### ข้อจำกัดการตีความ
 
-### ผลรันจริงจาก cleaned_data.json จำนวน 1,231 รีวิว
+การเห็นตรงกันไม่รับประกันความถูกต้อง POS อาจผิดและ WordNet ไม่ได้เลือกความหมายตามบริบท
+การไม่พบ WordNet ไม่แปลว่าคำผิด/ไม่มีความหมาย ชื่อสถานที่ ภาษาพูด คำประกอบ
+และชนิดคำที่ lexicon ไม่ครอบคลุมอาจถูกกันออก การบังคับยืนยันทำให้ recall ลดลง
+รายงานสัดส่วนทั้ง occurrence และคำไม่ซ้ำแยกกัน: คำเดียวอาจอยู่หลายสถานะในต่างบริบท
+จึงไม่ควรรวมร้อยละของคำไม่ซ้ำ จำนวนคำลดลงไม่ใช่หลักฐานว่าคุณภาพดีขึ้น
 
-ตรวจ baseline CSV เท่ากับผลล่าสุดเดิมทุก byte และ clustering เท่ากันทั้ง
-รหัสกลุ่ม ลำดับสมาชิก และจำนวนสมาชิก (974 กลุ่มปกติ + รอตรวจสอบ)
-ตรวจ CSV กับ Excel และสมาชิก clustering ครบทั้ง 4 โหมด/12 ไฟล์
-รูปแบบสีและช่องผู้ตรวจว่างตรงข้อกำหนด ผลชุดนี้อยู่ในโฟลเดอร์ชื่อโหมดโดยตรง
+### ผลจริงล่าสุด: WordNet + POS (27 ตุลาคม 2026)
 
-| mode | unigram | bigram | candidates | กลุ่มปกติ | รอตรวจสอบ | สัดส่วน | POS-only occurrences |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| baseline | 2,736 | 2,113 | 4,849 | 974 | 1,828 | 37.70% | 0 |
-| noun_verb | 2,528 | 1,628 | 4,156 | 828 | 1,582 | 38.07% | 5,019 |
-| remove_adj_adv_conj | 2,585 | 1,750 | 4,335 | 866 | 1,636 | 37.74% | 3,796 |
-| noun_verb_adj | 2,599 | 1,850 | 4,449 | 893 | 1,693 | 38.05% | 2,516 |
+รัน Input 1,231 รีวิวด้วยค่าเดิม min_df=2, EOM, embedding/revision/L2 เดิม
+และ complete/cosine distance_threshold=0.25; ไม่มีโหมดใดว่างหรือเล็กจน cluster ไม่ได้
 
-ทุกโหมดกรอง stopword 32,317 occurrences เท่ากัน (รวม ๆ/ฯ ที่อยู่ใน library
-และถูกตรวจ stopword ก่อน symbol ตามโค้ดเดิม) ยอด POS ต่อไปนี้ไม่นับซ้ำยอดนั้น:
+| mode | unigram | bigram | candidates | กลุ่มรอบแรก | กลุ่มหลัง merge | รอตรวจสอบ |
+|---|---:|---:|---:|---:|---:|---:|
+| baseline | 2736 | 2113 | 4849 | 974 | 425 | 1828 |
+| noun_verb | 1189 | 510 | 1699 | 354 | 224 | 599 |
+| remove_adj_adv_conj | 1189 | 510 | 1699 | 354 | 224 | 599 |
+| noun_verb_adj | 1235 | 613 | 1848 | 379 | 235 | 663 |
 
-| tag | noun_verb | remove_adj_adv_conj | noun_verb_adj |
-|---|---:|---:|---:|
-| ADJ | 2503 | 2503 | 0 |
-| ADP | 379 | 0 | 379 |
-| ADV | 911 | 911 | 911 |
-| AUX | 236 | 0 | 236 |
-| CCONJ | 33 | 33 | 33 |
-| DET | 250 | 0 | 250 |
-| NUM | 141 | 0 | 141 |
-| PART | 44 | 0 | 44 |
-| PRON | 167 | 0 | 167 |
-| PUNCT | 6 | 0 | 6 |
-| SCONJ | 349 | 349 | 349 |
+baseline CSV SHA256 ก่อน/หลังตรงกัน:
+`4096eab1cbf87b9519a6a237745a306f4dc5d4f147a576f36dc6c7710ef982bc`
+ตรวจ data.json/cleaned_data.json ไม่เปลี่ยน และ checksum clustering Input ก่อน/หลัง merging ตรงกันทุกโหมด
+สมาชิกครบ 4849/1699/1699/1848 รวม noise; กลุ่มเดิมที่ยังเดี่ยว 205/145/145/147 ตามลำดับ
+ช่องชื่อ Aspect/หมายเหตุยังว่างทั้งหมด ไม่โยก noise เข้ากลุ่ม
 
-ตัวอย่างจริง Input 2: “เป็นหาดที่สวยงามเหมาะแก่การมาเที่ยววันหยุดพักผ่อนกับครอบครัว
-เม็ดทรายละเอียด มีกอจกรรมทางน้ำให้เล่นมากมาย” (ในไฟล์เป็นบรรทัดเดียว)
-ได้ `หาด/NOUN`, `สวยงาม/ADJ`, `เหมาะ/VERB`, `เล่น/VERB`:
-แบบ 1/2 ตัด occurrence สวยงาม ส่วน baseline/แบบ 3 เก็บ
-bigram `สวยงาม เหมาะ` จึงผ่านขั้น token ใน baseline/แบบ 3 และถูกปฏิเสธในแบบ 1/2
-ทุกแบบยังเก็บ `เที่ยว วันหยุด`; `หาด สวยงาม` ไม่ถูกสร้างข้าม `ที่` ที่เป็น stopword
+จาก 37,960 occurrences ที่ผ่านตัวกรองพื้นฐาน และ 5,176 คำไม่ซ้ำ:
 
-ตัวอย่างกลุ่มสอดคล้อง: กลุ่มทะเล 10 รายการเหมือนกันใน baseline G19,
-แบบ 1 G13, แบบ 2 G16, แบบ 3 G15 ได้แก่ ทะเล, น้ำทะเล, ริมทะเล, ทะเลใน,
-ท้องทะเล, ชม ทะเล, ฝั่งทะเล, ทะเล ฝั่ง, ทางทะเล, มหาสมุทร
-ตัวอย่างปะปน: G01 ทุกโหมดยังรวม `หาดใหญ่` กับ `หาด`, `ชายหาด` และวลีไม่สมบูรณ์
-เช่น `บาท หาด`, `หาด ทราบ` (baseline/แบบ 3 มี 36 สมาชิก; แบบ 1/2 มี 35)
-แสดงว่าตัวกรอง POS ยังแก้ความกำกวมของชื่อสถานที่และการตัดคำไม่ได้ทั้งหมด
+| สถานะ | occurrences | ร้อยละ | คำไม่ซ้ำ | ร้อยละของ 5176 คำ |
+|---|---:|---:|---:|---:|
+| ยืนยันร่วมกัน | 21285 | 56.07 | 2025 | 39.12 |
+| ขัดแย้ง/เทียบป้ายไม่ได้ | 5706 | 15.03 | 1009 | 19.49 |
+| มีเฉพาะผล POS | 10969 | 28.90 | 2730 | 52.74 |
+| ไม่ทราบชนิดคำ | 0 | 0.00 | 0 | 0.00 |
 
-ความคลาดเคลื่อนที่ต้องตรวจ: Input 1 tagger ให้ `ซ่อน/SCONJ` และ `เงียบสงบ/NOUN`
-จึงตัดซ่อนในทุกแบบ POS และเก็บเงียบสงบในทุกแบบ แม้ผู้อ่านอาจมองชนิดคำต่างออกไป
-ผลเหล่านี้ใช้ตาม tagger จริง ไม่มีการแก้ tag ด้วยรายการคำพิเศษ
-ดังนั้นยังไม่ควรเลือกแบบ 1 เพียงเพราะ candidates/noise เชิงจำนวนลดลง:
-สัดส่วนรอตรวจสอบของแบบ 1 กลับสูงกว่า baseline และยังต้องตรวจบริบทด้วยมนุษย์
+คอลัมน์คำไม่ซ้ำทับซ้อนข้ามสถานะได้ ไม่ใช่ partition ของคำไม่ซ้ำ
 
+ผลคำที่ตรวจ (ไม่มีข้อยกเว้นเฉพาะคำ):
+
+- อร่อย: WordNet=ADV; POS NOUN 67, VERB 28, ADJ 4, ADV 3, DET 1, AUX 1
+  ยืนยันร่วมกันเพียง 3/104 occurrences แต่ ADV ไม่ผ่านทั้งสามโหมด
+- สะอาด: WordNet=ADJ; POS ADJ 23, NOUN 37, ADV 12, VERB 2, PROPN 1, NUM 1
+  23/76 occurrences ผ่านเฉพาะ noun_verb_adj
+- ความสะอาด: WordNet ไม่พบ; POS NOUN 15 occurrences จึงอยู่ audit ไม่เข้า candidates หลัก
+- ร้าน: WordNet=NOUN; POS NOUN 179 occurrences ยืนยันร่วมกันทั้งหมด
+- นะคะ: WordNet ไม่พบ; POS NOUN 38, ADV 19, VERB 3, DET 2, SCONJ 1 รวม 63 occurrences
+
+ตัวอย่างข้อความ Input ตามจริงแบบเต็ม (ลำดับอ้างถึง cleaned_data.json):
+
+- Input 564, อร่อย, POS=NOUN / WordNet=ADV, ขัดแย้ง:
+  “ตลาดน้ำสองศาสนา มีอาหารอิสลาม อร่อย ๆ ให้เลือกทานอย่างหลากหลาย”
+- Input 719, สะอาด, POS=NUM / WordNet=ADJ, ขัดแย้ง:
+  “บนเกาะมีสถานที่ให้ไปมากมาย สวยงาม คนไม่เยอะมากเหมือนเกาะอื่นๆ สะอาด คนบนเกาะ อัธยาศัยดีมาก”
+- Input 627, ความสะอาด, POS=NOUN / WordNet ไม่พบ:
+  “หาดยังคงดูสกปรกเหมือนเดิม แม้จะมีการรณรงค์เรื่องวิวทิวทัศน์และความสะอาดแล้วก็ตาม แม่ค้าก็ยังคงขายของแพงมาก”
+- Input 278, ร้าน, POS=NOUN / WordNet=NOUN, ยืนยันร่วมกัน:
+  “หาดทรายยาว ร้านขายของตลอดริมชายหาดมีมากมายให้เลือกสรร แต่น้ำทะเลสีไม่ค่อยสวยแล้วเสื่อมสภาพตามกาลเวลา”
+- Input 184, นะคะ, POS=NOUN / WordNet ไม่พบ:
+  “ใครไปเที่ยวสงขลาอย่าลืมแวะถ่ายรูปที่นี่นะคะ น้ำทะเลไม่ใสมากแต่ก็ไม่ได้สกปรกค่ะ จอดรถได้ตามริมฟุตบาทเลย”
+
+ตัวอย่างกลุ่มหลัง merge จาก noun_verb_adj:
+
+- M070 รวม G98/G119: “ใส”, “ใส ไหล”, “ใส เหมาะ”, “สะอาด”, “สวย สะอาด”, “ใส สะอาด”
+  มีแกนเรื่องความใส/สะอาด แต่ยังมีวลีที่ต้องอ่านบริบทก่อนยืนยัน Aspect
+- M027 รวม G16/G256: ราคา/ค่าใช้จ่าย/ค่าธรรมเนียม/ค่าบริการเป็นแกนสอดคล้อง
+  แต่มี “อ่าว ค่าบริการ” ซึ่งยังต้องตรวจ
+- M001 รวม 19 กลุ่มเดิม 52 คำ/วลี ยังปะปน “อุดหนุน”, “อาศัย”, “บังกะโล”,
+  “เศียร”, “วัด”, “กม.”, “บาท”, “มอร์ ไซ” ฯลฯ: WordNet + POS ไม่ได้แก้ความผิดพลาด
+  tokenizer หรือรับประกันกลุ่มความหมาย รวมถึงความผิดพลาดรอบแรกที่ติดมารอบสอง
 
 ## การทดลองรวมกลุ่มรอบที่สอง
 
@@ -422,7 +387,7 @@ python -m review_analysis.merge_clusters --mode noun_verb_adj --distance-thresho
 “รอตรวจสอบ” แยกไว้แถวสุดท้าย (จำนวนกลุ่มเดิมในแถวนี้คือ 1)
 ไม่มีแถวรอตรวจสอบปลอมหาก Input ไม่มีรายการนี้
 
-ชีต “สรุปการรัน” เก็บโหมด threshold วิธีระยะ/linkage โมเดล revision รุ่น library
+Terminal แสดงโหมด threshold วิธีระยะ/linkage โมเดล revision รุ่น library แทนชีตสรุป
 device/batch/seed จำนวนกลุ่มก่อนและหลัง จำนวนกลุ่มที่ไม่รวม จำนวนสมาชิก
 จำนวนรอตรวจสอบ และ SHA256 Input ก่อน/หลัง โดยไม่ตั้งชื่อ Aspect
 ตรวจทุกกลุ่มเดิมปรากฏครั้งเดียว สมาชิกไม่หาย/เพิ่ม/ซ้ำและไม่แยกกลุ่ม
@@ -430,7 +395,9 @@ device/batch/seed จำนวนกลุ่มก่อนและหลั�
 หยุดก่อนเขียนหากเซลล์เกิน 32,767 UTF-16 units และตรวจ Excel round-trip
 ก่อนแทนไฟล์ผลเดิม กรณีไม่มีกลุ่มปกติไม่ทำ clustering; กลุ่มปกติเดียวคงเป็น M001
 
-### ผลทดลองจริงรอบสอง: threshold 0.25
+### ผลทดลองประวัติก่อนใช้ WordNet ร่วม POS: threshold 0.25
+
+ตารางด้านล่างเป็นผลเก่า ไม่ใช่ผลของกฎยืนยันร่วมกันล่าสุด
 
 | mode | กลุ่มปกติรอบแรก | กลุ่มใหม่ | กลุ่มเดิมที่ยังเดี่ยว | รอตรวจสอบเดิม |
 |---|---:|---:|---:|---:|

@@ -9,7 +9,9 @@ from pythainlp.corpus import thai_stopwords
 
 from review_analysis import analyze_tfidf as tfidf
 from review_analysis import cluster_terms as cluster
-from review_analysis.pos_rules import CORPUS, ENGINE, MODES, tag_tokens
+from review_analysis.pos_rules import CORPUS, ENGINE, MODES, WordNetLexicon, tag_tokens
+from review_analysis.pos_wordnet_review import occurrence_rows, write_review
+from review_analysis.merge_clusters import check_excel_lock
 
 
 def parse_args(argv=None):
@@ -34,7 +36,7 @@ def reserve_outputs(modes, root=None):
     return paths
 
 
-def report_examples(reviews, documents, tagged, stopwords, modes, count):
+def report_examples(reviews, documents, tagged, stopwords, modes, count, lexicon=None):
     """Use identical input indices and original adjacent pairs across policies."""
     for index, (review, tokens, tags) in enumerate(zip(reviews, documents, tagged), 1):
         if index > count:
@@ -42,7 +44,7 @@ def report_examples(reviews, documents, tagged, stopwords, modes, count):
         print(f"\n[Input {index}] {review}")
         print("token/POS:", list(zip(tokens, tags)))
         for mode in modes:
-            reasons = tfidf.token_decisions(tokens, stopwords, mode, tags)
+            reasons = tfidf.token_decisions(tokens, stopwords, mode, tags, lexicon)
             print(mode, "occurrences:", [(i, t, tags[i], r) for i, (t, r) in enumerate(zip(tokens, reasons)) if r != "space"])
             # Form pairs on the original sequence, ignoring ordinary spaces only.
             # Rejected tokens remain present; never manufacture a bridged pair.
@@ -69,23 +71,36 @@ def cluster_result(candidates, args):
 
 def main(argv=None):
     args = parse_args(argv)
+    print("ปิด Excel ก่อนรัน; รันซ้ำเขียนทับผลชื่อเดิม ควร Save As ก่อนกรอกแง่มุมเอง", flush=True)
     modes = MODES if args.mode == "all" else (args.mode,)
     try:
         reviews = tfidf.load_reviews(args.input)
         documents = [tfidf.tokenize_review(review) for review in reviews]
-        # Tag complete reviews before either stopword or POS filtering.
-        # Baseline analysis ignores these tags; they are for examples only.
-        tagged = [tag_tokens(tokens) for tokens in documents]
+        needs_evidence = any(mode != "baseline" for mode in modes)
+        lexicon = WordNetLexicon() if needs_evidence else None
+        tagged = [tag_tokens(tokens) for tokens in documents] if needs_evidence else None
         stopwords = set(thai_stopwords())
+        # Preflight selected workbooks before overwriting any result.
+        for mode in modes:
+            for suffix in ("tfidf", "cluster"):
+                check_excel_lock(tfidf.OUTPUTS_DIR / mode / f"{mode}_{suffix}.xlsx")
+        if needs_evidence:
+            print(f"NLTK={tfidf.package_version('nltk')}; WordNet lang=tha; resources=wordnet/omw-1.4; cache=lexical-only", flush=True)
+            print("กำลังส่งออก audit ทุก occurrence ที่ผ่านตัวกรองพื้นฐาน", flush=True)
+            write_review(tfidf.OUTPUTS_DIR / "pos_wordnet_review.xlsx",
+                         occurrence_rows(reviews, documents, tagged, stopwords, lexicon), args.input)
         paths = reserve_outputs(modes)
         print(f"PyThaiNLP={tfidf.package_version('pythainlp')}; POS engine={ENGINE}; corpus={CORPUS}")
         print(f"input={args.input.resolve()}; N={len(reviews)}; min_df={args.min_df}; sort_by={args.sort_by}")
-        report_examples(reviews, documents, tagged, stopwords, modes, args.token_examples)
+        if needs_evidence:
+            report_examples(reviews, documents, tagged, stopwords, modes, args.token_examples, lexicon)
+        else:
+            print("baseline: ไม่โหลด POS/WordNet และไม่เขียนทับ occurrence audit")
         summaries = []
         for mode in modes:
             result = tfidf.analyze_reviews(
                 reviews, stopwords, args.min_df, args.sort_by, mode=mode,
-                prepared_tokens=documents, prepared_tags=tagged,
+                prepared_tokens=documents, prepared_tags=tagged, lexicon=lexicon,
             )
             output = paths[mode]
             tfidf.write_csv(output / f"{mode}_tfidf.csv", result.rows)
@@ -104,8 +119,8 @@ def main(argv=None):
             noise = sum(len(g.members) for g in groups if g.group_id == cluster.REVIEW_GROUP_ID)
             normal = [g for g in groups if g.group_id != cluster.REVIEW_GROUP_ID]
             summaries.append((mode, result.unigram_count, result.bigram_count, len(candidates), len(normal), noise, f"{noise / len(candidates):.2%}" if candidates else "N/A", dict(sorted(result.filtered_pos.items()))))
-            print(f"\n{mode}: stopwords occurrences={sum(result.filtered_stopwords.values())}; POS-only occurrences={sum(result.filtered_pos.values())}")
-            print("POS-only by tag:", dict(sorted(result.filtered_pos.items())))
+            print(f"\n{mode}: stopwords occurrences={sum(result.filtered_stopwords.values())}; POS/WordNet-filtered occurrences={sum(result.filtered_pos.values())}")
+            print("POS/WordNet-filtered by tag:", dict(sorted(result.filtered_pos.items())))
             print("เหตุผลไม่ซ้ำ: กรองตามกฎเดิม/stopwords ก่อน แล้วจึงนับ POS บน token ที่เหลือ")
             if mode == modes[0]:
                 tfidf.print_stopword_report(result.filtered_stopwords, stopwords)
@@ -113,7 +128,7 @@ def main(argv=None):
             for group in normal[:20]:
                 print(group.group_id, len(group.members), group.member_text.replace("\n", " | "))
             print(f"Output: {output.resolve()}", flush=True)
-        print("\nmode\tunigram\tbigram\tcandidates\tgroups\tnoise\tnoise_ratio\tPOS-only occurrences by tag")
+        print("\nmode\tunigram\tbigram\tcandidates\tgroups\tnoise\tnoise_ratio\tPOS/WordNet-filtered occurrences by tag")
         for summary in summaries:
             print("\t".join(map(str, summary)))
         print("จำนวนคำหรือ noise ที่น้อยกว่าไม่ได้พิสูจน์ว่าคุณภาพ Aspect ดีกว่า; ต้องตรวจบริบทและกลุ่มที่ปะปน")

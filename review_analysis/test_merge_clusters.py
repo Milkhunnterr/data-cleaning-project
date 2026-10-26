@@ -100,7 +100,7 @@ def test_excel_style_literal_text_and_summary(tmp_path):
     path = tmp_path / "output.xlsx"
     merge.write_workbook(path, groups, rows, {"mode": "baseline", "distance_threshold": .25})
     wb = load_workbook(path, data_only=False)
-    assert wb.sheetnames == ["กลุ่มคำ", "สรุปการรัน"]
+    assert wb.sheetnames == ["กลุ่มคำ"]
     sheet = wb["กลุ่มคำ"]
     assert list(next(sheet.values)) == merge.COLUMNS
     assert sheet["D2"].value == "=literal\na" and sheet["D2"].data_type == "s"
@@ -112,7 +112,6 @@ def test_excel_style_literal_text_and_summary(tmp_path):
             assert cell.alignment.wrap_text
             assert cell.fill.fgColor.rgb == ("FFFFF3D4" if cell.column >= 6 else "FFFFFFFF")
         assert row[5].value is None and row[6].value is None
-    assert dict(wb["สรุปการรัน"].iter_rows(min_row=2, values_only=True))["mode"] == "baseline"
     wb.close()
 
 
@@ -163,9 +162,8 @@ def test_modes_repeat_input_checksum_and_noise_not_encoded(tmp_path, monkeypatch
         assert merge.checksum(p) == digest
     assert len(list(outputs.iterdir())) == 4
     wb = load_workbook(outputs / "baseline_merged.xlsx", read_only=True)
-    summary = dict(wb[merge.SUMMARY_SHEET].iter_rows(min_row=2, values_only=True))
-    assert summary["normal_groups_before"] == 3 and summary["normal_groups_after"] == 2
-    assert summary["input_sha256_before"] == summary["input_sha256_after"]
+    assert wb.sheetnames == [merge.SHEET_NAME]
+    assert wb[merge.SHEET_NAME].max_row == 4
     assert list(wb[merge.SHEET_NAME].values)[-1][3] == "noise"
     wb.close()
 
