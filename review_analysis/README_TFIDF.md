@@ -275,7 +275,8 @@ candidate ว่างจะได้ตารางหัวคอลัมน�
 ### Output และการตรวจเปรียบเทียบ
 
 ครั้งแรกสร้าง `review_analysis/outputs/{mode}/` แต่ละโฟลเดอร์มีเพียง
-`tfidf_aspect_candidates.csv`, `tfidf_aspect_candidates.xlsx`, `term_clusters.xlsx`
+`{mode}_tfidf.csv`, `{mode}_tfidf.xlsx`, `{mode}_cluster.xlsx`
+เช่น `noun_verb_tfidf.csv`, `noun_verb_tfidf.xlsx`, `noun_verb_cluster.xlsx`
 ใช้ตัวส่งออกและรูปแบบเดิมทั้งหมด รวมชีต สี และช่องผู้ตรวจที่ว่าง
 หากโฟลเดอร์โหมดใดที่ขอรันมีอยู่แล้ว จะใช้รอบใหม่ร่วมกันใต้
 `review_analysis/outputs/pos_run_<timestamp>_<id>/{mode}/` และพิมพ์พาธจริง

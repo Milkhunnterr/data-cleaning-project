@@ -98,12 +98,12 @@ def main(argv=None):
                 prepared_tokens=documents, prepared_tags=tagged,
             )
             output = paths[mode]
-            tfidf.write_csv(output / "tfidf_aspect_candidates.csv", result.rows)
-            tfidf.write_excel(output / "tfidf_aspect_candidates.xlsx", result.rows)
+            tfidf.write_csv(output / f"{mode}_tfidf.csv", result.rows)
+            tfidf.write_excel(output / f"{mode}_tfidf.xlsx", result.rows)
             candidates = [cluster.Candidate(i + 2, row["คำ/วลี"], row["ประเภท"]) for i, row in enumerate(result.rows)]
             config = cluster.parse_args([])
-            config.input = output / "tfidf_aspect_candidates.csv"
-            config.output = output / "term_clusters.xlsx"
+            config.input = output / f"{mode}_tfidf.csv"
+            config.output = output / f"{mode}_cluster.xlsx"
             config.device = cluster.resolve_device(args.device)
             config.cluster_selection_method = "eom"
             cluster.print_parameters(config, config.device)

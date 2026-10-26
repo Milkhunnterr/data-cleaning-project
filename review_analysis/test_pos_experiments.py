@@ -136,7 +136,7 @@ def test_baseline_ignores_pos_and_matches_original_default(monkeypatch):
 def test_outputs_never_overwrite_human_work(tmp_path):
     folder = tmp_path / "baseline"
     folder.mkdir()
-    protected = folder / "term_clusters.xlsx"
+    protected = folder / "baseline_cluster.xlsx"
     protected.write_bytes(b"human annotation")
     paths = runner.reserve_outputs(pos.MODES, tmp_path)
     assert protected.read_bytes() == b"human annotation"
@@ -165,4 +165,4 @@ def test_empty_pipeline_creates_all_three_outputs(tmp_path, monkeypatch, capsys)
     assert runner.main(["--input", str(source), "--mode", "all", "--token-examples", "0"]) == 0
     assert "N/A" in capsys.readouterr().out
     for mode in pos.MODES:
-        assert sorted(p.name for p in (tmp_path / "outputs" / mode).iterdir()) == ["term_clusters.xlsx", "tfidf_aspect_candidates.csv", "tfidf_aspect_candidates.xlsx"]
+        assert sorted(p.name for p in (tmp_path / "outputs" / mode).iterdir()) == [f"{mode}_cluster.xlsx", f"{mode}_tfidf.csv", f"{mode}_tfidf.xlsx"]
