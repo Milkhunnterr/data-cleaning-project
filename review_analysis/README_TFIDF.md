@@ -274,14 +274,19 @@ candidate ว่างจะได้ตารางหัวคอลัมน�
 
 ### Output และการตรวจเปรียบเทียบ
 
-ครั้งแรกสร้าง `review_analysis/outputs/{mode}/` แต่ละโฟลเดอร์มีเพียง
-`{mode}_tfidf.csv`, `{mode}_tfidf.xlsx`, `{mode}_cluster.xlsx`
+ทุกครั้งเขียนลง `review_analysis/outputs/{mode}/` โดยตรง โดย mode คือ
+`baseline`, `noun_verb`, `remove_adj_adv_conj`, `noun_verb_adj`
+แต่ละโฟลเดอร์มี `{mode}_tfidf.csv`, `{mode}_tfidf.xlsx`, `{mode}_cluster.xlsx`
 เช่น `noun_verb_tfidf.csv`, `noun_verb_tfidf.xlsx`, `noun_verb_cluster.xlsx`
 ใช้ตัวส่งออกและรูปแบบเดิมทั้งหมด รวมชีต สี และช่องผู้ตรวจที่ว่าง
-หากโฟลเดอร์โหมดใดที่ขอรันมีอยู่แล้ว จะใช้รอบใหม่ร่วมกันใต้
-`review_analysis/outputs/pos_run_<timestamp>_<id>/{mode}/` และพิมพ์พาธจริง
-จึงไม่เขียนทับแม้มีเพียงบางไฟล์เดิม รวมถึงไฟล์ที่มนุษย์กรอกแล้ว
-ไม่แก้ผลล่าสุดที่อยู่ตรงใต้ outputs และไม่สร้างไฟล์รายงานหรือ log เพิ่มอัตโนมัติ
+รันซ้ำจะเขียนทับไฟล์ชื่อเดิม: **ควร Save As เป็นไฟล์ชื่ออื่นก่อนกรอกแง่มุมหรือหมายเหตุเอง**
+เพราะผลใหม่จะล้างข้อมูลผู้ตรวจในไฟล์ผลลัพธ์ชื่อเดิม
+`--mode all` ส่งออกครบ 4 โหมด; โหมดเดียวเขียนเฉพาะ 3 ไฟล์ของโหมดนั้น
+clustering อ่าน CSV ที่เพิ่งส่งออกของโหมดเดียวกัน (เมื่อไม่มี candidate จะส่งออกกลุ่มว่าง)
+ไม่มีการสร้างโฟลเดอร์รอบใหม่ timestamp random suffix หรือสำรองอัตโนมัติ
+ไม่แก้ `data.json`, `cleaned_data.json` หรือไฟล์ผลรุ่นก่อนที่อยู่ตรงใต้ outputs
+โฟลเดอร์เก่า `before_pythainlp_eom_*` และ `pos_run_*` ไม่ถูกใช้งานหรือถูกลบโดย runner
+ผลลัพธ์ยังอยู่ใต้ outputs ซึ่ง Git ignore และไม่สร้างไฟล์รายงานหรือ log เพิ่มอัตโนมัติ
 
 Terminal สรุป unigram/bigram/candidates, กลุ่มปกติ, จำนวน/สัดส่วนรอตรวจสอบ
 และ POS-only occurrences แยก tag; เมื่อไม่มี candidate สัดส่วนจะแสดง N/A

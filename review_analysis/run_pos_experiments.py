@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 from pathlib import Path
 import sys
-import uuid
 
 from pythainlp.corpus import thai_stopwords
 
@@ -26,21 +24,13 @@ def parse_args(argv=None):
 
 
 def reserve_outputs(modes, root=None):
-    """Reserve empty directories; an existing directory is never reused.
-
-    If any requested mode exists, keep the entire comparison in a new run.
-    mkdir(exist_ok=False) also fails safely on a concurrent reservation.
-    """
+    """Reuse fixed mode directories; result files are overwritten on reruns."""
     root = tfidf.OUTPUTS_DIR if root is None else Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    if any((root / mode).exists() for mode in modes):
-        root = root / ("pos_run_" + datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8])
-        root.mkdir(exist_ok=False)
-        print(f"พบโฟลเดอร์เดิม: ใช้รอบใหม่ {root}")
     paths = {}
     for mode in modes:
         paths[mode] = root / mode
-        paths[mode].mkdir(exist_ok=False)
+        paths[mode].mkdir(exist_ok=True)
     return paths
 
 
@@ -100,9 +90,10 @@ def main(argv=None):
             output = paths[mode]
             tfidf.write_csv(output / f"{mode}_tfidf.csv", result.rows)
             tfidf.write_excel(output / f"{mode}_tfidf.xlsx", result.rows)
-            candidates = [cluster.Candidate(i + 2, row["คำ/วลี"], row["ประเภท"]) for i, row in enumerate(result.rows)]
             config = cluster.parse_args([])
             config.input = output / f"{mode}_tfidf.csv"
+            # Read this mode's newly written CSV; empty results have no candidates.
+            candidates = cluster.load_candidates(config.input) if result.rows else []
             config.output = output / f"{mode}_cluster.xlsx"
             config.device = cluster.resolve_device(args.device)
             config.cluster_selection_method = "eom"

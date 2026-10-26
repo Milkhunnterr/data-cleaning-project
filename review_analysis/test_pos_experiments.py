@@ -133,15 +133,11 @@ def test_baseline_ignores_pos_and_matches_original_default(monkeypatch):
     assert actual == expected
 
 
-def test_outputs_never_overwrite_human_work(tmp_path):
-    folder = tmp_path / "baseline"
-    folder.mkdir()
-    protected = folder / "baseline_cluster.xlsx"
-    protected.write_bytes(b"human annotation")
-    paths = runner.reserve_outputs(pos.MODES, tmp_path)
-    assert protected.read_bytes() == b"human annotation"
-    assert all(path.parent.name.startswith("pos_run_") for path in paths.values())
-    assert all(not list(path.iterdir()) for path in paths.values())
+def test_outputs_reuse_fixed_mode_directories(tmp_path):
+    first = runner.reserve_outputs(pos.MODES, tmp_path)
+    second = runner.reserve_outputs(pos.MODES, tmp_path)
+    assert first == second == {mode: tmp_path / mode for mode in pos.MODES}
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(pos.MODES)
 
 
 @pytest.mark.parametrize("size", [0, 1])
@@ -166,3 +162,55 @@ def test_empty_pipeline_creates_all_three_outputs(tmp_path, monkeypatch, capsys)
     assert "N/A" in capsys.readouterr().out
     for mode in pos.MODES:
         assert sorted(p.name for p in (tmp_path / "outputs" / mode).iterdir()) == [f"{mode}_cluster.xlsx", f"{mode}_tfidf.csv", f"{mode}_tfidf.xlsx"]
+
+
+@pytest.mark.parametrize("selected", ["all", *pos.MODES])
+def test_rerun_overwrites_only_selected_modes_and_reads_fresh_csv(tmp_path, monkeypatch, selected):
+    root = tmp_path / "outputs"
+    root.mkdir()
+    source = root / "cleaned_data.json"
+    source.write_text(json.dumps(["ทะเล สวย", "ทะเล สวย"], ensure_ascii=False), encoding="utf-8")
+    data = root / "data.json"
+    data.write_bytes(b"original data")
+    input_bytes = source.read_bytes()
+    monkeypatch.setattr(tf, "OUTPUTS_DIR", root)
+    loaded = []
+    actual_loader = cl.load_candidates
+    def load_csv(path):
+        loaded.append(path)
+        return actual_loader(path)
+    monkeypatch.setattr(cl, "load_candidates", load_csv)
+    def check_clustering(candidates, config):
+        mode = config.input.parent.name
+        assert config.input == root / mode / f"{mode}_tfidf.csv"
+        assert config.output == root / mode / f"{mode}_cluster.xlsx"
+        assert candidates == actual_loader(config.input)
+        assert all(item.term != "stale" for item in candidates)
+        return cl.build_cluster_rows(candidates, [-1] * len(candidates))
+    monkeypatch.setattr(runner, "cluster_result", check_clustering)
+    assert runner.main(["--input", str(source), "--mode", "all", "--token-examples", "0"]) == 0
+    directories = {p.relative_to(root) for p in root.rglob("*") if p.is_dir()}
+    # Put stale contents in all outputs, including simulated reviewer work.
+    for mode in pos.MODES:
+        tf.write_csv(root / mode / f"{mode}_tfidf.csv", [{"คำ/วลี": "stale", "ประเภท": "unigram"}])
+        for suffix in ("tfidf", "cluster"):
+            path = root / mode / f"{mode}_{suffix}.xlsx"
+            wb = load_workbook(path)
+            wb.active["Z1"] = "reviewer work"
+            wb.save(path)
+            wb.close()
+    before = {p: p.read_bytes() for mode in pos.MODES for p in (root / mode).iterdir()}
+    loaded.clear()
+    assert runner.main(["--input", str(source), "--mode", selected, "--token-examples", "0"]) == 0
+    modes = pos.MODES if selected == "all" else (selected,)
+    assert loaded == [root / mode / f"{mode}_tfidf.csv" for mode in modes]
+    assert {p.relative_to(root) for p in root.rglob("*") if p.is_dir()} == directories
+    for path, content in before.items():
+        if path.parent.name in modes:
+            assert path.read_bytes() != content
+        else:
+            assert path.read_bytes() == content
+    for mode in pos.MODES:
+        assert sorted(p.name for p in (root / mode).iterdir()) == [f"{mode}_cluster.xlsx", f"{mode}_tfidf.csv", f"{mode}_tfidf.xlsx"]
+    assert source.read_bytes() == input_bytes
+    assert data.read_bytes() == b"original data"
