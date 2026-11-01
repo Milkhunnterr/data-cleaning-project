@@ -186,6 +186,57 @@ Aspect ที่ถูกต้อง จึงต้องตรวจทั้
 
 ## การทดลอง POS ร่วมกับ Thai WordNet สี่โหมด
 
+### ชุดอาจารย์ 400 รีวิว
+
+runner รองรับทั้ง schema เดิม (`JSON array of strings`) และไฟล์ Excel ชุดอาจารย์
+โดยตรง สำหรับ Excel จะอ่านเฉพาะชีต `open_coding` และเฉพาะคอลัมน์ `review_id`
+กับ `text` เท่านั้น ไม่อ่านชีต `สัดส่วนที่สุ่ม`, ช่อง coder หรือหมายเหตุเป็นรีวิว
+ต้องพบข้อความชนิด string ที่ไม่ว่างครบ 400 แถว มิฉะนั้นหยุดพร้อมเลขแถว/สาเหตุ
+โดยไม่เติมข้อมูล ไม่สุ่ม ไม่ Clean ไม่ลบข้อความซ้ำ และไม่ยุบ `review_id` ซ้ำ
+
+แต่ละแถวได้ `record_id` คงที่ตามลำดับ `teacher_400_0001` ถึง
+`teacher_400_0400`; เก็บ `review_id`, ชื่อชีต, เลขแถว Excel และข้อความต้นฉบับ
+ครบใน `review_analysis/outputs/teacher_400/input_records.json` เพื่อย้อนตรวจได้
+ตัวอย่างรีวิวในผล TF-IDF และ occurrence audit อ้าง `record_id` นี้ ข้อความที่ส่งเข้า
+tokenizer เป็นค่า `text` เดิมทุกตัวอักษร ส่วนการตัดคำ/กรอง feature ยังใช้กฎเดิม
+ไฟล์ manifest เป็น JSON สำหรับ provenance ไม่ใช่ Input schema เดิม และไม่ถูกนำไป
+ปะปนกับ `cleaned_data.json`
+
+`run_pos_experiments` ทำ TF-IDF และ first-pass EOM clustering ต่อกันครบทุกโหมด
+ส่วน merging ต้องระบุทั้งราก Input และ Output ของชุดเดียวกัน คำสั่งที่ใช้กับ Linux
+จาก repository root:
+
+```bash
+python -m review_analysis.run_pos_experiments --mode all --input ./data/open_coding_round0_400.xlsx --output-dir ./review_analysis/outputs/teacher_400 --token-examples 0 --device auto && python -m review_analysis.merge_clusters --mode all --input-dir ./review_analysis/outputs/teacher_400 --output-dir ./review_analysis/outputs/teacher_400/merged_clusters --distance-threshold 0.25 --device auto
+python -m pytest review_analysis -q
+```
+
+Windows PowerShell จาก repository root (merging ทำต่อเมื่อ runner สำเร็จ):
+
+```powershell
+python -m review_analysis.run_pos_experiments --mode all --input .\data\open_coding_round0_400.xlsx --output-dir .\review_analysis\outputs\teacher_400 --token-examples 0 --device auto; if ($LASTEXITCODE -eq 0) { python -m review_analysis.merge_clusters --mode all --input-dir .\review_analysis\outputs\teacher_400 --output-dir .\review_analysis\outputs\teacher_400\merged_clusters --distance-threshold 0.25 --device auto }
+python -m pytest review_analysis -q
+```
+
+ผลอยู่ตำแหน่งคงที่ต่อไปนี้และการรันซ้ำเขียนชื่อเดิม ไม่สร้าง timestamp/backup:
+
+```text
+review_analysis/outputs/teacher_400/
+├── input_records.json
+├── pos_wordnet_review.xlsx
+├── baseline/
+├── noun_verb/
+├── remove_adj_adv_conj/
+├── noun_verb_adj/
+└── merged_clusters/
+```
+
+แต่ละโหมดคงชื่อ `{mode}_tfidf.csv`, `{mode}_tfidf.xlsx`,
+`{mode}_cluster.xlsx` และ merged คงชื่อ `{mode}_merged.xlsx` ตาม pipeline เดิม
+ค่า default ของ CLI ทั้งสองยังชี้ `review_analysis/outputs/` จึงใช้งาน dataset เดิม
+ได้เหมือนเดิม หากรันชุดอาจารย์ต้องระบุ directory ตามคำสั่งด้านบนเพื่อไม่อ่านผลเก่า
+Excel ทุกไฟล์คงชีต/คอลัมน์เดิม ไม่เพิ่มชีตสรุป และช่อง Aspect/หมายเหตุยังว่าง
+
 ใช้ POS `perceptron/orchid_ud` บน token ของรีวิวทั้งฉบับก่อนกรอง เพื่อรักษาบริบท
 ตรวจจำนวน/ข้อความ/ลำดับ token ให้ตรงกัน หากเลื่อนตำแหน่งให้หยุด ไม่จับคู่เงียบ ๆ
 ใช้ Thai WordNet ผ่าน NLTK `synsets(token, lang="tha")` และรวบรวมทุก synset:

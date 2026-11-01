@@ -54,6 +54,14 @@ def parse_args(argv=None):
     parser.add_argument("--mode", choices=("all", *MODES), default="all")
     parser.add_argument("--distance-threshold", type=distance_threshold, default=DEFAULT_DISTANCE_THRESHOLD)
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--input-dir", type=Path, default=OUTPUTS_DIR,
+        help="โฟลเดอร์รากที่มี {mode}/{mode}_cluster.xlsx",
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=OUTPUTS_DIR / "merged_clusters",
+        help="โฟลเดอร์สำหรับไฟล์ merged",
+    )
     return parser.parse_args(argv)
 
 
@@ -244,9 +252,11 @@ def write_workbook(path, groups, rows, summary):
         raise PermissionError(f"เขียน {path} ไม่ได้: ไฟล์อาจถูกล็อก กรุณาปิด Excel และตรวจสิทธิ์ก่อนรันใหม่") from exc
 
 
-def run_mode(mode, threshold, device):
-    source = OUTPUTS_DIR / mode / f"{mode}_cluster.xlsx"
-    target = OUTPUTS_DIR / "merged_clusters" / f"{mode}_merged.xlsx"
+def run_mode(mode, threshold, device, input_dir=None, output_dir=None):
+    input_dir = OUTPUTS_DIR if input_dir is None else Path(input_dir)
+    output_dir = OUTPUTS_DIR / "merged_clusters" if output_dir is None else Path(output_dir)
+    source = input_dir / mode / f"{mode}_cluster.xlsx"
+    target = output_dir / f"{mode}_merged.xlsx"
     check_excel_lock(target)
     before = checksum(source)
     try:
@@ -298,7 +308,7 @@ def main(argv=None):
         print(f"threshold={args.distance_threshold} (ค่าทดลอง); complete linkage บน cosine distance ของ centroid")
         device = first.resolve_device(args.device)
         for mode in modes:
-            run_mode(mode, args.distance_threshold, device)
+            run_mode(mode, args.distance_threshold, device, args.input_dir, args.output_dir)
     except PermissionError as exc:
         print(f"ข้อผิดพลาด: ไฟล์ถูกล็อกหรือไม่มีสิทธิ์ กรุณาปิด Excel ก่อนรัน: {exc}", file=sys.stderr)
         return 1

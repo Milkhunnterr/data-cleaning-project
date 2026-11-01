@@ -175,3 +175,19 @@ def test_detects_changed_checksum(tmp_path):
     path.write_bytes(b"after")
     with pytest.raises(ValueError, match="checksum"):
         merge.assert_unchanged(path, digest)
+
+
+def test_cli_directories_keep_teacher_inputs_and_outputs_together(tmp_path, monkeypatch):
+    input_root = tmp_path / "teacher_400"
+    output_root = input_root / "merged_clusters"
+    make_input(input_root / "baseline" / "baseline_cluster.xlsx", [("G01", "a", 1)])
+    monkeypatch.setattr(
+        merge.first, "encode_terms",
+        lambda candidates, model, revision, device, batch_size: np.array([[1.0, 0.0]]),
+    )
+    assert merge.main([
+        "--mode", "baseline", "--device", "cpu",
+        "--input-dir", str(input_root), "--output-dir", str(output_root),
+    ]) == 0
+    assert (output_root / "baseline_merged.xlsx").exists()
+    assert not (tmp_path / "merged_clusters" / "baseline_merged.xlsx").exists()

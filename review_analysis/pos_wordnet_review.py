@@ -6,16 +6,20 @@ from review_analysis import analyze_tfidf as tf
 from review_analysis import pos_rules as pos
 from review_analysis.merge_clusters import check_excel_lock, excel_length, style_sheet
 
-HEADERS = ["ลำดับ Input ของ cleaned_data.json (เริ่มจาก 1)", "ข้อความรีวิวต้นฉบับตาม Input",
+HEADERS = ["record_id", "ข้อความรีวิวต้นฉบับตาม Input",
            "ตำแหน่ง token ก่อนกรอง (เริ่มจาก 1)", "token", "POS ที่ทำนาย",
            "ชนิดคำที่พบใน WordNet", "สถานะการยืนยัน", "ผ่าน noun_verb หรือไม่",
            "ผ่าน remove_adj_adv_conj หรือไม่", "ผ่าน noun_verb_adj หรือไม่", "เหตุผล"]
 
 
-def occurrence_rows(reviews, documents, tagged, stopwords, lexicon):
+def occurrence_rows(reviews, documents, tagged, stopwords, lexicon, record_ids=None):
     if not len(reviews) == len(documents) == len(tagged):
         raise ValueError("Audit alignment mismatch: document count")
-    for index, (review, tokens, tags) in enumerate(zip(reviews, documents, tagged), 1):
+    if record_ids is None:
+        record_ids = list(range(1, len(reviews) + 1))
+    if len(record_ids) != len(reviews):
+        raise ValueError("Audit alignment mismatch: record_id count")
+    for index, (record_id, review, tokens, tags) in enumerate(zip(record_ids, reviews, documents, tagged), 1):
         if "".join(tokens) != review or len(tokens) != len(tags):
             raise ValueError(f"Audit alignment mismatch: Input {index}")
         for position, (token, tag) in enumerate(zip(tokens, tags), 1):
@@ -23,7 +27,7 @@ def occurrence_rows(reviews, documents, tagged, stopwords, lexicon):
                 continue
             evidence = pos.decide(tag, lexicon.lookup(token))
             flags = [pos.accepts(mode, evidence) for mode in pos.MODES[1:]]
-            yield [index, review, position, token, str(tag) if tag is not None else "UNKNOWN",
+            yield [record_id, review, position, token, str(tag) if tag is not None else "UNKNOWN",
                    ", ".join(sorted(evidence.wordnet)), evidence.status, *flags, evidence.reason]
 
 

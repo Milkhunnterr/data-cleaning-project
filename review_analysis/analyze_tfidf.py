@@ -308,6 +308,7 @@ def analyze_reviews(
     min_df: int = 2,
     sort_by: str = "document_frequency",
     *, mode: str = "baseline", prepared_tokens=None, prepared_tags=None, lexicon=None,
+    record_ids=None,
 ) -> AnalysisResult:
     if min_df < 1:
         raise ValueError("min_df ต้องไม่น้อยกว่า 1")
@@ -319,6 +320,11 @@ def analyze_reviews(
     for prepared in (prepared_tokens, prepared_tags):
         if prepared is not None and len(prepared) != len(reviews):
             raise ValueError("Prepared document count does not match input")
+    if record_ids is not None:
+        if len(record_ids) != len(reviews):
+            raise ValueError("record_id count does not match input")
+        if len(set(record_ids)) != len(record_ids):
+            raise ValueError("record_id ต้องไม่ซ้ำ")
 
     if mode != "baseline" and lexicon is None:
         lexicon = WordNetLexicon()
@@ -383,10 +389,16 @@ def analyze_reviews(
         candidates, start=1
     ):
         examples = choose_examples(feature, document_counts, reviews)
-        example_text = " || ".join(
-            f"[Input {input_number}] {review}"
-            for input_number, review in examples
-        )
+        if record_ids is None:
+            example_text = " || ".join(
+                f"[Input {input_number}] {review}"
+                for input_number, review in examples
+            )
+        else:
+            example_text = " || ".join(
+                f"[Record {record_ids[input_number - 1]}] {review}"
+                for input_number, review in examples
+            )
         rows.append(
             {
                 "อันดับ": rank,

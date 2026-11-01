@@ -88,6 +88,19 @@ def test_default_sort_uses_df_then_tfidf_and_examples_match_features():
     assert phrase["หมายเหตุผู้ตรวจ"] == ""
 
 
+def test_record_ids_are_used_in_examples_without_changing_text():
+    reviews = ["วิว สวย", "วิว ทะเล"]
+    result = analyze_reviews(
+        reviews, set(), min_df=1, record_ids=["teacher_400_0001", "teacher_400_0002"]
+    )
+    row = next(item for item in result.rows if item["คำ/วลี"] == "วิว")
+    assert row["รีวิวตัวอย่าง 3 รายการ"] == (
+        "[Record teacher_400_0001] วิว สวย || "
+        "[Record teacher_400_0002] วิว ทะเล"
+    )
+    assert reviews == ["วิว สวย", "วิว ทะเล"]
+
+
 def test_tfidf_sort_option_uses_tfidf_then_document_frequency():
     reviews = ["วิว วิว วิว วิว", "ทะเล", "ทะเล", "ทะเล"]
     result = analyze_reviews(reviews, set(), min_df=1, sort_by="tfidf")

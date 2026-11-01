@@ -12,12 +12,19 @@ from review_analysis import cluster_terms as cluster
 from review_analysis.pos_rules import CORPUS, ENGINE, MODES, WordNetLexicon, tag_tokens
 from review_analysis.pos_wordnet_review import occurrence_rows, write_review
 from review_analysis.merge_clusters import check_excel_lock
+from review_analysis.review_input import (
+    checksum, duplicate_review_ids, load_records, write_record_manifest,
+)
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("all", *MODES), default="all")
     parser.add_argument("--input", type=Path, default=tfidf.DEFAULT_INPUT)
+    parser.add_argument(
+        "--output-dir", type=Path, default=tfidf.OUTPUTS_DIR,
+        help="โฟลเดอร์รากของผลแต่ละโหมด (default: outputs เดิม)",
+    )
     parser.add_argument("--min-df", type=tfidf.positive_int, default=2)
     parser.add_argument("--sort-by", choices=("document_frequency", "tfidf"), default="document_frequency")
     parser.add_argument("--token-examples", type=tfidf.nonnegative_int, default=2)
@@ -36,12 +43,14 @@ def reserve_outputs(modes, root=None):
     return paths
 
 
-def report_examples(reviews, documents, tagged, stopwords, modes, count, lexicon=None):
+def report_examples(reviews, record_ids, documents, tagged, stopwords, modes, count, lexicon=None):
     """Use identical input indices and original adjacent pairs across policies."""
-    for index, (review, tokens, tags) in enumerate(zip(reviews, documents, tagged), 1):
+    identifiers = record_ids if record_ids is not None else list(range(1, len(reviews) + 1))
+    label = "Record" if record_ids is not None else "Input"
+    for index, (review, record_id, tokens, tags) in enumerate(zip(reviews, identifiers, documents, tagged), 1):
         if index > count:
             break
-        print(f"\n[Input {index}] {review}")
+        print(f"\n[{label} {record_id}] {review}")
         print("token/POS:", list(zip(tokens, tags)))
         for mode in modes:
             reasons = tfidf.token_decisions(tokens, stopwords, mode, tags, lexicon)
@@ -74,7 +83,25 @@ def main(argv=None):
     print("ปิด Excel ก่อนรัน; รันซ้ำเขียนทับผลชื่อเดิม ควร Save As ก่อนกรอกแง่มุมเอง", flush=True)
     modes = MODES if args.mode == "all" else (args.mode,)
     try:
-        reviews = tfidf.load_reviews(args.input)
+        input_before = checksum(args.input)
+        records = load_records(args.input)
+        reviews = [record.text for record in records]
+        record_ids = [record.record_id for record in records]
+        is_teacher_excel = args.input.suffix.lower() == ".xlsx"
+        output_record_ids = record_ids if is_teacher_excel else None
+        if len(record_ids) != len(set(record_ids)):
+            raise ValueError("record_id ภายในซ้ำ")
+        if is_teacher_excel:
+            write_record_manifest(args.output_dir / "input_records.json", records, args.input)
+        duplicate_ids = duplicate_review_ids(records)
+        print(f"input_sha256_before={input_before}")
+        print(f"records={len(records)}; unique_record_ids={len(set(record_ids))}; duplicate_review_ids={len(duplicate_ids)}")
+        for review_id, count in duplicate_ids.items():
+            references = [
+                f"{record.record_id}(Excel row {record.source_row})"
+                for record in records if record.review_id == review_id
+            ]
+            print(f"review_id ซ้ำ (เก็บครบ): {review_id!r} จำนวน {count} แถว: {', '.join(references)}")
         documents = [tfidf.tokenize_review(review) for review in reviews]
         needs_evidence = any(mode != "baseline" for mode in modes)
         lexicon = WordNetLexicon() if needs_evidence else None
@@ -83,17 +110,17 @@ def main(argv=None):
         # Preflight selected workbooks before overwriting any result.
         for mode in modes:
             for suffix in ("tfidf", "cluster"):
-                check_excel_lock(tfidf.OUTPUTS_DIR / mode / f"{mode}_{suffix}.xlsx")
+                check_excel_lock(args.output_dir / mode / f"{mode}_{suffix}.xlsx")
         if needs_evidence:
             print(f"NLTK={tfidf.package_version('nltk')}; WordNet lang=tha; resources=wordnet/omw-1.4; cache=lexical-only", flush=True)
             print("กำลังส่งออก audit ทุก occurrence ที่ผ่านตัวกรองพื้นฐาน", flush=True)
-            write_review(tfidf.OUTPUTS_DIR / "pos_wordnet_review.xlsx",
-                         occurrence_rows(reviews, documents, tagged, stopwords, lexicon), args.input)
-        paths = reserve_outputs(modes)
+            write_review(args.output_dir / "pos_wordnet_review.xlsx",
+                         occurrence_rows(reviews, documents, tagged, stopwords, lexicon, output_record_ids), args.input)
+        paths = reserve_outputs(modes, args.output_dir)
         print(f"PyThaiNLP={tfidf.package_version('pythainlp')}; POS engine={ENGINE}; corpus={CORPUS}")
         print(f"input={args.input.resolve()}; N={len(reviews)}; min_df={args.min_df}; sort_by={args.sort_by}")
         if needs_evidence:
-            report_examples(reviews, documents, tagged, stopwords, modes, args.token_examples, lexicon)
+            report_examples(reviews, output_record_ids, documents, tagged, stopwords, modes, args.token_examples, lexicon)
         else:
             print("baseline: ไม่โหลด POS/WordNet และไม่เขียนทับ occurrence audit")
         summaries = []
@@ -101,6 +128,7 @@ def main(argv=None):
             result = tfidf.analyze_reviews(
                 reviews, stopwords, args.min_df, args.sort_by, mode=mode,
                 prepared_tokens=documents, prepared_tags=tagged, lexicon=lexicon,
+                record_ids=output_record_ids,
             )
             output = paths[mode]
             tfidf.write_csv(output / f"{mode}_tfidf.csv", result.rows)
@@ -132,6 +160,10 @@ def main(argv=None):
         for summary in summaries:
             print("\t".join(map(str, summary)))
         print("จำนวนคำหรือ noise ที่น้อยกว่าไม่ได้พิสูจน์ว่าคุณภาพ Aspect ดีกว่า; ต้องตรวจบริบทและกลุ่มที่ปะปน")
+        input_after = checksum(args.input)
+        if input_after != input_before:
+            raise ValueError(f"Input checksum เปลี่ยนระหว่างรัน: {args.input}")
+        print(f"input_sha256_after={input_after}; Input คงเดิม")
         return 0
     except (OSError, ValueError, KeyError) as exc:
         print(f"ข้อผิดพลาด: {exc}", file=sys.stderr)
